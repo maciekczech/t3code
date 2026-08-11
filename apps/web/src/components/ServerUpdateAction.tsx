@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { useEnvironmentPresentation } from "~/state/presentation";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
@@ -83,6 +84,8 @@ export function ServerUpdateAction({
   const updateServer = useAtomCommand(serverEnvironment.updateServer, {
     reportFailure: false,
   });
+  const { presentation } = useEnvironmentPresentation(environmentId);
+  const isConnected = presentation?.connection.phase === "connected";
   const { copyToClipboard } = useCopyToClipboard<{ command: string }>({
     target: "update command",
     onCopy: ({ command }) => {
@@ -102,7 +105,7 @@ export function ServerUpdateAction({
   });
 
   const handleUpdate = async () => {
-    if (pendingUpdateEnvironmentIds.has(environmentId)) {
+    if (!isConnected || pendingUpdateEnvironmentIds.has(environmentId)) {
       return;
     }
     pendingUpdateEnvironmentIds.add(environmentId);
@@ -150,7 +153,7 @@ export function ServerUpdateAction({
   }
 
   return (
-    <Button size="xs" onClick={() => void handleUpdate()}>
+    <Button size="xs" disabled={!isConnected} onClick={() => void handleUpdate()}>
       {label}
     </Button>
   );

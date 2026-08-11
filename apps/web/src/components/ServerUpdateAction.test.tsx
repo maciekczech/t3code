@@ -6,6 +6,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
+  connectionPhase: "connected",
   updateServer: vi.fn(),
   toast: vi.fn(),
 }));
@@ -15,6 +16,12 @@ vi.mock("~/hooks/useCopyToClipboard", () => ({
 }));
 vi.mock("~/state/server", () => ({
   serverEnvironment: { updateServer: Symbol("updateServer") },
+}));
+vi.mock("~/state/presentation", () => ({
+  useEnvironmentPresentation: () => ({
+    isReady: true,
+    presentation: { connection: { phase: testState.connectionPhase } },
+  }),
 }));
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => testState.updateServer,
@@ -26,14 +33,15 @@ vi.mock("./ui/toast", () => ({
 import { ServerUpdateAction, ServerUpdateProgress } from "./ServerUpdateAction";
 
 type ActionElement = ReactElement<{
+  readonly disabled?: boolean;
   readonly onClick?: () => void;
 }>;
 
-function renderAction(): ActionElement {
+function renderAction(selfUpdate: "boot-service" | null = "boot-service"): ActionElement {
   return ServerUpdateAction({
     environmentId: "env-test" as EnvironmentId,
     serverLabel: "Test server",
-    selfUpdate: "boot-service",
+    selfUpdate,
     targetVersion: "0.0.31",
   }) as ActionElement;
 }
@@ -45,8 +53,37 @@ async function flushPromises(): Promise<void> {
 
 describe("ServerUpdateAction", () => {
   beforeEach(() => {
+    testState.connectionPhase = "connected";
     testState.updateServer.mockReset();
     testState.toast.mockReset();
+  });
+
+  it.each(["available", "offline", "connecting", "reconnecting", "error"])(
+    "disables self-update while the environment is %s",
+    async (connectionPhase) => {
+      testState.connectionPhase = connectionPhase;
+
+      const action = renderAction();
+      action.props.onClick?.();
+      await flushPromises();
+
+      expect(action.props.disabled).toBe(true);
+      expect(testState.updateServer).not.toHaveBeenCalled();
+    },
+  );
+
+  it("enables self-update when the environment connects", () => {
+    testState.connectionPhase = "connecting";
+    expect(renderAction().props.disabled).toBe(true);
+
+    testState.connectionPhase = "connected";
+    expect(renderAction().props.disabled).toBe(false);
+  });
+
+  it("keeps the manual update command available while disconnected", () => {
+    testState.connectionPhase = "connecting";
+
+    expect(renderAction(null).props.disabled).not.toBe(true);
   });
 
   it("reports success only after the shared update flow reconnects", async () => {
