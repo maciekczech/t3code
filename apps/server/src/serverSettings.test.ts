@@ -310,6 +310,25 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("does not select the DeepSeek preview for auxiliary text generation", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+      const next = yield* serverSettings.updateSettings({
+        providers: {
+          codex: { enabled: true },
+          deepseekHarness: { enabled: true },
+        },
+        textGenerationModelSelection: {
+          instanceId: ProviderInstanceId.make("deepseekHarness"),
+          model: "deepseek-official/deepseek-v4-pro",
+        },
+      });
+
+      assert.strictEqual(next.textGenerationModelSelection.instanceId, "codex");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves custom provider instance text generation selections", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
@@ -961,6 +980,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             binaryPath: "/opt/homebrew/bin/codex",
           },
           cursor: {
+            enabled: false,
+          },
+          deepseekHarness: {
             enabled: false,
           },
           grok: {

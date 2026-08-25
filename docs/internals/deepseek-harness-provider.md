@@ -21,6 +21,19 @@ DeepSeek Harness is a developer preview. The initial compatibility target is exa
 instead of attempting to interpret an unknown wire format. The allowlist and a boot-time behavior
 probe are both required because the Web Host API deliberately has no protocol-version field.
 
+## MVP implementation status
+
+The first implementation slice is intentionally selectable but disabled by default. It includes
+the managed loopback runtime, exact version gate, HTTP/WebSocket client, dynamic model discovery,
+reasoning-effort selection, new and resumed sessions, text/reasoning/tool/usage/title translation,
+image prompts, permissions and plan commands, approvals, questions, cancellation, host failure
+reporting, web/desktop/mobile presentation, and focused transport/adapter/provider fixtures.
+
+The following target-contract items remain explicit release gates rather than implied support:
+DeepSeek-native subagent projection, automatic reconnect with history gap repair,
+per-thread T3 MCP injection, auxiliary text generation, steering an active turn, and integrated
+cross-platform/remote verification. Provider-side rollback remains intentionally unsupported.
+
 ## Verified upstream baseline
 
 This design was checked against the published `dsh-v0.1.1-rc.2` package and tag on 2026-08-25.
@@ -49,30 +62,31 @@ implementation rather than asking T3's translator to trust documentation alone.
 
 ### Review disposition
 
-| Review concern | Resolution |
-| --- | --- |
-| Approvals, reasoning, and usage may be absent | Verified on the real Web Host wire; retain them in the product contract. |
-| Pending interactions across restart | Confirmed lossy; fail the stale T3 request and expose retry. |
-| Version/tag and startup flags | `0.1.1-rc.2`, ephemeral port, host binding, no-open, and readiness output verified. |
-| Runtime permission modes | Added an explicit four-mode mapping with two labeled approximations. |
-| Model options | Reasoning efforts are supported and come from `session.models`. |
-| Missing client surfaces | Added the contracts, web, desktop, mobile, settings, diagnostics, and docs inventory. |
-| Update pin conflicts with `@latest` helper | Initial maintenance is manual-only; pinned generic updates are separate work. |
-| Text-generation session growth | Fresh scratch sessions are archived; retained native logs are documented. |
-| MCP bridging | Made a release gate because T3 credentials are per-thread and a static shared-host bridge is unsafe. |
-| Windows teardown and cwd aliases | Reuse existing process-tree and realpath-equivalence precedents. |
-| ACP might be a cheap v0 | Rejected explicitly because T3's ACP transport cannot replace missing DeepSeek semantics. |
+| Review concern                                | Resolution                                                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Approvals, reasoning, and usage may be absent | Verified on the real Web Host wire; retain them in the product contract.                             |
+| Pending interactions across restart           | Confirmed lossy; fail the stale T3 request and expose retry.                                         |
+| Version/tag and startup flags                 | `0.1.1-rc.2`, ephemeral port, host binding, no-open, and readiness output verified.                  |
+| Runtime permission modes                      | Added an explicit four-mode mapping with two labeled approximations.                                 |
+| Model options                                 | Reasoning efforts are supported and come from `session.models`.                                      |
+| Missing client surfaces                       | Added the contracts, web, desktop, mobile, settings, diagnostics, and docs inventory.                |
+| Update pin conflicts with `@latest` helper    | Initial maintenance is manual-only; pinned generic updates are separate work.                        |
+| Text-generation session growth                | Auxiliary text generation is explicitly unsupported in the MVP; no scratch sessions are created.     |
+| MCP bridging                                  | Made a release gate because T3 credentials are per-thread and a static shared-host bridge is unsafe. |
+| Windows teardown and cwd aliases              | Reuse existing process-tree and realpath-equivalence precedents.                                     |
+| ACP might be a cheap v0                       | Rejected explicitly because T3's ACP transport cannot replace missing DeepSeek semantics.            |
 
 ## Product contract
 
 DeepSeek Harness appears in the same provider-instance setup used by Codex, Claude, Cursor, Grok,
 and OpenCode. A configured instance must support:
 
-- installation, authentication, version, model, and update status in the existing provider UI;
+- installation, version, model, and update status in the existing provider UI; credential validity is
+  reported by the first real prompt because catalog discovery does not authenticate;
 - new sessions, multiple turns, persisted history, and continuation after a T3 server restart;
 - streamed assistant text, reasoning, tool calls and results, plans, and token usage;
 - one-shot approvals, structured user questions, turn interruption, and session stop;
-- images when the selected DeepSeek model advertises image input;
+- image prompts on models that accept DeepSeek's Web Host image content;
 - subagent activity when DeepSeek emits durable subagent events;
 - T3's per-thread permission and plan modes, with the provider-specific fallbacks documented below;
 - isolated provider instances with distinct environment and DeepSeek home directories;
@@ -127,12 +141,12 @@ found by typechecking is part of the same surface work, not optional cleanup.
 
 The driver kind is `deepseekHarness`, with multiple instances allowed. Its settings are:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `enabled` | `true` | Existing hidden provider-instance switch. |
-| `binaryPath` | `dsh` | DeepSeek Harness executable. |
-| `homePath` | empty | Optional `DSH_HOME`; an empty value uses an instance-isolated T3 directory. |
-| `launchArgs` | empty | Additional arguments appended after T3-owned Web flags. |
+| Field        | Default | Meaning                                                                     |
+| ------------ | ------- | --------------------------------------------------------------------------- |
+| `enabled`    | `false` | Existing hidden provider-instance switch; preview users opt in.             |
+| `binaryPath` | `dsh`   | DeepSeek Harness executable.                                                |
+| `homePath`   | empty   | Optional `DSH_HOME`; an empty value uses an instance-isolated T3 directory. |
+| `launchArgs` | empty   | Additional arguments appended after T3-owned Web flags.                     |
 
 Credentials remain environment variables, primarily `DEEPSEEK_API_KEY`, managed through the
 existing per-instance environment editor. Secrets are never copied into settings, logs, command
@@ -145,12 +159,10 @@ from executable installation so an old Node runtime does not look like an authen
 and browser-opening flags because the runtime owns those values and must remain loopback-only.
 
 The driver creates one runtime, adapter, text-generation service, and managed provider snapshot per
-instance. Text generation uses a scratch DeepSeek session through the same runtime rather than a
-second process or a duplicate direct-API client. Each request gets a fresh session, collects only
-its terminal assistant text, and archives the session immediately. DeepSeek has no session-delete
-method in the tested wire, so the native log remains under the instance home and follows the same
-retention policy as other DeepSeek history. This limitation is visible in diagnostics and avoids
-pretending that archiving is disk cleanup.
+instance. The MVP text-generation service fails explicitly with an actionable unsupported error;
+it does not start a duplicate host or consume events from the conversation adapter's single-consumer
+queue. A later implementation must share a broadcast-capable host runtime and archive scratch
+sessions before this provider is offered for commit, branch, pull-request, or fallback-title text.
 
 ### `DeepSeekHarnessRuntime`
 
@@ -161,15 +173,16 @@ The runtime follows `OpenCodeRuntime`:
 3. create or reuse the instance's private `DSH_HOME`;
 4. spawn `dsh web --host 127.0.0.1 --port 0 --no-open` with the merged instance environment;
 5. parse the canonical `dsh web: http://127.0.0.1:<port>` readiness line;
-6. establish both WebSocket downlinks and complete a health query before reporting readiness; and
+6. complete a health query before reporting readiness; the adapter then establishes both WebSocket
+   downlinks before it creates or resumes a T3 session; and
 7. bind graceful termination and forced cleanup to the provider-instance scope.
 
 The runtime is shared by all sessions belonging to that provider instance. It may connect to
 loopback only. T3 clients continue to communicate solely with the T3 server.
 
-The child receives a scrubbed, explicit environment. T3 supplies `DSH_HOME`, preserves sanctioned
-provider-instance variables, disables browser opening through the command line, and does not expose
-T3 pairing credentials to the child.
+The child inherits the server process environment, matching the existing provider drivers, then
+applies the provider-instance environment overlay and an instance-scoped `DSH_HOME`. T3 disables
+browser opening through the command line and never places prompt or credential values in arguments.
 
 Termination reuses the repository's managed-child semantics: signal the recorded process group on
 POSIX, use the existing Windows process-tree path on `win32`, bound graceful shutdown, and force
@@ -186,15 +199,15 @@ This module is a narrow client for the subset of the Web Host API T3 uses:
 - the response channel for approvals and structured questions.
 
 Wire envelopes and every consumed event are decoded at the boundary with Effect Schema. The client
-must not depend on DeepSeek's host package at runtime: that package pulls most of the Harness plugin
-graph into T3 and would couple two application runtimes. Unknown optional fields are ignored;
-unknown event discriminants are logged and skipped. A malformed known event or envelope is a
-protocol error and makes the affected session fail visibly.
+does not depend on DeepSeek's host package at runtime: that package pulls most of the Harness plugin
+graph into T3 and would couple two application runtimes. Unknown optional fields are ignored and
+unknown session event discriminants are skipped. A malformed known event or envelope is a protocol
+error and makes the affected session fail visibly.
 
-The client owns request identifiers, reconnection, and stream cancellation. Reconnection opens new
-streams, requests fresh history pages using `beforeSeq`, repairs forward from the last accepted
-sequence, and deduplicates by DeepSeek session id plus event sequence. DeepSeek's current `since`
-stream parameter is not relied on because it is documented as unimplemented.
+The client owns request identifiers and stream cancellation. The adapter deduplicates live events
+by DeepSeek sequence and reloads history on persisted-session resume. Automatic in-process stream
+reconnect with `beforeSeq` gap repair remains a release gate. DeepSeek's current `since` stream
+parameter is not relied on because it is documented as unimplemented.
 
 ### `DeepSeekHarnessAdapter`
 
@@ -206,7 +219,6 @@ After session creation and before admitting a turn, the adapter applies T3 state
 DeepSeek's host `commands/execute` route. Permission presets map as follows:
 
 | T3 runtime mode | DeepSeek preset | Contract |
-| --- | --- | --- |
 | `approval-required` | `read-only` | Safest approximation: writes require a model-requested escalation and approval, but harmless read-only commands may run without a prompt. |
 | `auto-accept-edits` | `workspace-write` | Approximation: workspace edits and workspace-confined commands run; escalation outside the workspace still asks. DeepSeek cannot separately auto-allow edits while asking for every command. |
 | `auto` | `workspace-write` | Native match for routine in-workspace work with risky escalation prompts. |
@@ -233,7 +245,8 @@ projection or command completion before prompting, so a mode change cannot race 
 - `readThread` returns the adapter's reconstructed snapshots.
 - `rollbackThread` reports that DeepSeek Harness does not support provider-side rollback.
 
-`session.models` is authoritative for model options. In the tested release all three shipped
+`llm.models` is authoritative for the provider snapshot, while `session.selectModel` applies the
+chosen provider, model, and effort to a session. In the tested release all three shipped
 DeepSeek models expose reasoning efforts `off`, `low`, `high`, and `max` with `high` as the default;
 T3 presents these through its existing model-option selector and sends the selected effort through
 `session.selectModel`. No hard-coded assumption prevents another configured DeepSeek Harness model
@@ -249,12 +262,12 @@ The provider probe reports separately:
 - executable missing;
 - executable present but version unsupported;
 - Web runtime startup or protocol failure;
-- missing or rejected API credentials; and
-- available models and their input/context capabilities.
+- available models and their reported reasoning options.
 
-The snapshot uses DeepSeek's model directory instead of hard-coding it. If discovery is unavailable
-before authentication, the provider shows no runnable models and explains the credential or
-discovery failure.
+The snapshot uses DeepSeek's model directory instead of hard-coding it. The tested Web Host can
+return that catalog without validating `DEEPSEEK_API_KEY`, so authentication remains `unknown` in
+the snapshot. A rejected key fails the first prompt visibly; the probe does not spend a model
+request merely to manufacture an authenticated badge.
 
 Maintenance identifies the npm package `@deepseek-ai/dsh`, but the first release uses T3's existing
 manual-only maintenance capability. The current package-manager helpers always install `@latest`,
@@ -265,26 +278,26 @@ the provider adapter does not smuggle a custom updater into its runtime.
 
 ## Event translation
 
-The translation layer is exhaustive over the tested DeepSeek event vocabulary and preserves native
-payloads in provider refs where T3 has no exact concept.
+The translation layer covers the MVP subset of the tested DeepSeek event vocabulary and preserves
+the native payload on every translated canonical event.
 
-| DeepSeek event | T3 event |
-| --- | --- |
-| session attach/create | session and thread started/configured |
-| `turn/start` | turn started |
-| `turn/end` | turn completed or aborted from its reason |
-| assistant reasoning chunks | reasoning item lifecycle and deltas |
-| assistant text/image chunks | assistant item lifecycle and deltas |
-| `tool/call` | tool item started |
-| `tool/result` | tool item completed, including error metadata |
-| `todo/write` | turn plan updated |
-| assistant usage | thread token usage updated |
-| title event/projection | thread metadata title updated |
-| host session status | session activity state changed |
-| approval requested/resolved | request opened/resolved |
-| question requested/resolved | user input requested/resolved |
-| subagent start/progress/end | task lifecycle events |
-| host agent error/process exit | session error and exit |
+| DeepSeek event                | T3 event                                                |
+| ----------------------------- | ------------------------------------------------------- |
+| session attach/create         | session and thread started/configured                   |
+| `turn/start`                  | turn started                                            |
+| `turn/end`                    | turn completed or aborted from its reason               |
+| assistant reasoning chunks    | reasoning item lifecycle and deltas                     |
+| assistant text/image chunks   | assistant item lifecycle and deltas                     |
+| `tool/call`                   | tool item started                                       |
+| `tool/result`                 | tool item completed, including error metadata           |
+| `todo/write`                  | turn plan updated                                       |
+| assistant usage               | thread token usage updated                              |
+| title event/projection        | thread metadata title updated                           |
+| host session status           | session activity state changed                          |
+| approval requested/resolved   | request opened/resolved                                 |
+| question requested/resolved   | user input requested/resolved                           |
+| subagent start/progress/end   | target: task lifecycle events; not projected by the MVP |
+| host agent error/process exit | session error and exit                                  |
 
 Tool-call argument deltas update the in-progress tool item; DeepSeek does not emit a distinct
 long-running tool-progress vocabulary in the tested fixture, so T3 emits no fabricated percentage
@@ -292,9 +305,9 @@ or status messages between call and result. `turn.diff.updated` remains owned by
 git-diff pipeline rather than the provider. DeepSeek title projections map to
 `thread.metadata.updated`; host running/idle changes map to `session.state.changed`.
 
-Both live events and history replay pass through the same pure translator. Replay suppresses events
-already ingested by sequence. This is the main defense against divergence between fresh, resumed,
-and reconnected threads.
+Live events pass through the pure translator. Resume history reconstructs native turn snapshots and
+establishes the last accepted sequence without re-emitting old canonical events. Feeding replay
+through the same translator is required before automatic reconnect is enabled.
 
 ## Session and data flow
 
@@ -318,22 +331,23 @@ answer the correct pending promise.
 ## Failure and recovery
 
 - Startup has a bounded readiness timeout and includes sanitized stderr in diagnostics.
-- Unexpected child exit fails active turns, emits session exit events, and marks the provider
-  unavailable. It never respawns during a turn.
-- A later provider refresh or new session may restart the child once under the existing scoped
-  runtime policy. Repeated crashes remain visible and do not form a restart loop.
-- Event-stream loss pauses admission, reconnects once, reloads history from the last sequence, and
-  resumes only after the gap is closed. Failure to close the gap fails the session.
-- A client reconnect to the same live DeepSeek host replays its pending interaction with a fresh
-  request id. A DeepSeek host restart cannot do so: the durable turn is closed as interrupted and
-  the pending question/approval is failed in T3 with a retry action. T3 never displays a stale
-  approval control after restart.
-- Duplicate events are ignored by native sequence. Sequence regression or conflicting duplicates
-  are protocol errors.
+- Unexpected child exit or either WebSocket failure fails active turns, resolves in-memory pending
+  interactions as unavailable, emits a session error, and does not respawn during that failure.
+- A later adapter operation may start one fresh scoped host. Mode projections are reset before a
+  resumed native session is used, so permissions and plan state are applied again. Repeated crashes
+  remain visible and do not form a background restart loop.
+- Automatic stream reconnect and history gap repair are not in the MVP. A stream loss is a visible
+  session failure; a later operation can restart the host, but it does not claim the failed turn
+  continued seamlessly.
+- A DeepSeek host restart cannot restore an in-memory pending question or approval. T3 resolves the
+  stale control and the user retries the turn if needed.
+- Duplicate live events are ignored by native sequence. Resume history establishes the sequence
+  baseline before new events are accepted.
 - Cancellation, scope closure, and server shutdown drain pending responses and terminate only the
   recorded child process.
-- Secret values and prompt content are excluded from ordinary diagnostics. Native event logging
-  remains opt-in through the existing provider logger.
+- Secret values and prompt content are excluded from ordinary diagnostics. Translated canonical
+  events retain their native payload for ingestion diagnostics; a separate native NDJSON logger is
+  not wired in the MVP.
 
 ## Compatibility and remote behavior
 
@@ -354,38 +368,35 @@ conversation history.
 
 ## Verification strategy
 
-Pure unit tests cover:
+The MVP's focused unit tests cover:
 
 - CLI version and readiness-line parsing;
 - settings defaults, environment isolation, and secret redaction;
 - every supported wire envelope and event schema;
-- exhaustive event translation, replay deduplication, and turn reconstruction; and
-- failure mapping for protocol, process, authentication, and unsupported rollback errors.
+- event translation, live sequence deduplication, todo plans, and turn reconstruction; and
+- provider status, model options, Node/version gates, unsupported text generation, and rollback.
 
-Adapter tests use a deterministic fake DeepSeek Host server to cover:
+Adapter tests use a deterministic fake DeepSeek Host client to cover:
 
 - new and resumed multi-turn sessions;
 - assistant, reasoning, tools, plans, usage, images, approvals, and questions;
-- all four T3 runtime-mode mappings, default/plan transitions, models, and reasoning efforts;
-- interruption, disconnect recovery, session stop, and multi-instance isolation; and
-- subprocess teardown on POSIX and Windows without killing unrelated processes; and
-- scratch text generation, archive-on-success/failure, and concurrent-request isolation.
+- the full-access runtime mapping, default plan reset, models, and reasoning efforts; and
+- continuation cursor/history behavior and cwd alias equivalence.
 
-One opt-in compatibility test runs against the supported `dsh` release with a mock model transport,
-so it exercises the real CLI, HTTP requests, WebSocket streams, approval/question responses, and
-restart semantics without spending an API key. Existing provider registry, settings,
-orchestration-ingestion, and maintenance tests gain a `deepseekHarness` case. Integrated
-verification covers provider setup and a full conversation in web, confirms the Electron-packaged
-server can find and launch `dsh`, and gives mobile a focused provider-selection, permission-mode,
-approval/question, and conversation pass through the same server.
+The upstream spike and local executable probe cover the supported real `dsh` release and Web Host
+wire. Before maintainers enable the preview beyond local testing, remaining verification includes
+all runtime-mode mappings, approvals/questions through canonical ingestion, interruption and host
+failure, POSIX/Windows teardown, packaged desktop discovery, and an integrated web/mobile remote
+conversation. Those checks are release gates, not claims made by the first MVP PR.
 
 ## Rollout
 
 Delivery is split into gates while retaining one end-to-end target:
 
 1. Land the protocol client, real-CLI compatibility fixture, runtime, and pure event translator.
-2. Land the driver, adapter, runtime/plan modes, model options, interactions, continuation, text
-   generation, maintenance snapshot, and every web/mobile/desktop presentation seam.
+2. Land the driver, adapter, runtime/plan modes, model options, interactions, continuation,
+   maintenance snapshot, and every web/mobile/desktop presentation seam. Auxiliary text generation
+   remains explicitly unsupported until it can safely share a broadcast-capable host runtime.
 3. Resolve per-thread T3 MCP injection with an upstream seam or a narrowly versioned companion
    plugin. Its acceptance test proves two simultaneous DeepSeek sessions receive only their own
    T3 credential and invocation context.
@@ -404,13 +415,13 @@ claiming full parity.
 This is high-difficulty adapter work but does not require an orchestration rewrite. For one engineer
 working with a coding agent, the planning estimate is:
 
-| Workstream | Focused engineering time |
-| --- | --- |
-| Protocol client, runtime, compatibility fixture, translator | 5-8 days |
-| Adapter behavior, interactions, modes, continuation, text generation | 5-8 days |
-| Contracts, provider setup, web/mobile presentation, docs | 3-5 days |
-| MCP isolation gate | 3-7 days if a companion plugin is viable; longer if upstream changes are required |
-| Cross-platform, remote, regression, and review hardening | 3-5 days |
+| Workstream                                                           | Focused engineering time                                                          |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Protocol client, runtime, compatibility fixture, translator          | 5-8 days                                                                          |
+| Adapter behavior, interactions, modes, continuation, text generation | 5-8 days                                                                          |
+| Contracts, provider setup, web/mobile presentation, docs             | 3-5 days                                                                          |
+| MCP isolation gate                                                   | 3-7 days if a companion plugin is viable; longer if upstream changes are required |
+| Cross-platform, remote, regression, and review hardening             | 3-5 days                                                                          |
 
 The realistic solo elapsed range is three to five weeks, with MCP/upstream uncertainty as the
 critical path. A useful internal build without MCP can exist earlier, but calling it a fully

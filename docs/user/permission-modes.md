@@ -45,3 +45,11 @@ labels above describe what you get; the exact per-provider translation is intern
 change.
 
 Mobile offers the same four modes with the same labels and descriptions.
+
+### DeepSeek Harness preview
+
+DeepSeek Harness maps **Supervised** to its `read-only` preset and **Full access** to
+`danger-full-access`. Both **Auto-accept edits** and **Auto** use `workspace-write` because the
+tested Harness release cannot separately auto-allow edits while asking before every command.
+This means Auto-accept edits is an approximation: ordinary workspace commands may also proceed,
+while operations outside the workspace still require escalation.

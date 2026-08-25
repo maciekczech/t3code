@@ -15,6 +15,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
+  isProviderDriverKind,
   type ModelSelection,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -237,6 +238,9 @@ const PersistedOptionalProviderSettings = Schema.Struct({
       cursor: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       grok: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       opencode: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
+      deepseekHarness: Schema.optionalKey(
+        Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) }),
+      ),
     }),
   ),
 });
@@ -264,7 +268,8 @@ function restoreUsedProviders(
       instance.enabled === undefined &&
       (instance.driver === "cursor" ||
         instance.driver === "grok" ||
-        instance.driver === "opencode") &&
+        instance.driver === "opencode" ||
+        instance.driver === "deepseekHarness") &&
       usedProviderInstances.has(instanceId)
         ? { ...instance, enabled: true }
         : instance,
@@ -287,19 +292,31 @@ function restoreUsedProviders(
         ...settings.providers.opencode,
         enabled: persisted.providers?.opencode?.enabled ?? usedProviders.has("opencode"),
       },
+      deepseekHarness: {
+        ...settings.providers.deepseekHarness,
+        enabled:
+          persisted.providers?.deepseekHarness?.enabled ?? usedProviders.has("deepseekHarness"),
+      },
     },
     providerInstances,
   };
 }
 
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
+  const selection = settings.textGenerationModelSelection;
+  const configuredInstance = settings.providerInstances[selection.instanceId];
+  const driver =
+    configuredInstance?.driver ??
+    (isProviderDriverKind(selection.instanceId) ? selection.instanceId : undefined);
+  return driver !== "deepseekHarness" && isModelSelectionProviderEnabled(settings, selection)
     ? settings
     : fallbackTextGenerationProvider(settings);
 }
 
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([, provider]) => provider.enabled);
+  const fallbackEntry = Object.entries(settings.providers).find(
+    ([driver, provider]) => provider.enabled && driver !== "deepseekHarness",
+  );
   const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
   if (!fallback) {
     return settings;
@@ -334,6 +351,10 @@ const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
     cursor: { ...DEFAULT_SERVER_SETTINGS.providers.cursor, enabled: undefined },
     grok: { ...DEFAULT_SERVER_SETTINGS.providers.grok, enabled: undefined },
     opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: undefined },
+    deepseekHarness: {
+      ...DEFAULT_SERVER_SETTINGS.providers.deepseekHarness,
+      enabled: undefined,
+    },
   },
 };
 

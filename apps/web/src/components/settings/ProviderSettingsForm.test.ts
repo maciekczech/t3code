@@ -49,6 +49,17 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("derives the DeepSeek Harness preview fields from its schema", () => {
+    const deepseek = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("deepseekHarness")];
+    expect(deepseek).toBeDefined();
+    expect(deepseek?.badgeLabel).toBe("Developer Preview");
+    expect(deriveProviderSettingsFields(deepseek!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "launchArgs",
+    ]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();
