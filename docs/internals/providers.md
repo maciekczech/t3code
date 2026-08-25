@@ -7,7 +7,11 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with five entries:
+[`builtInDrivers.ts`][drivers] exports the static list of first-party drivers. DeepSeek Harness has
+a dedicated [integration design](./deepseek-harness-provider.md) because its pre-release Host API
+requires an explicit compatibility boundary.
+
+The currently implemented entries are:
 
 | Driver kind   | Driver source                           |
 | ------------- | --------------------------------------- |
