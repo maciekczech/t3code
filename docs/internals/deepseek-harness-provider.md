@@ -21,27 +21,9 @@ DeepSeek Harness is a developer preview. The initial compatibility target is exa
 instead of attempting to interpret an unknown wire format. The allowlist and a boot-time behavior
 probe are both required because the Web Host API deliberately has no protocol-version field.
 
-## MVP implementation status
+## Compatibility baseline
 
-The first implementation slice is intentionally selectable but disabled by default. It includes
-the managed loopback runtime, exact version gate, HTTP/WebSocket client, dynamic model discovery,
-reasoning-effort selection, new and resumed sessions, text/reasoning/tool/usage/title translation,
-image prompts, permissions and plan commands, approvals, questions, cancellation, host failure
-reporting, web/desktop/mobile presentation, and focused transport/adapter/provider fixtures.
-
-The following target-contract items remain explicit release gates rather than implied support:
-DeepSeek-native subagent projection, automatic reconnect with history gap repair,
-per-thread T3 MCP injection, auxiliary text generation, steering an active turn, and integrated
-cross-platform/remote verification. Provider-side rollback remains intentionally unsupported.
-
-## Verified upstream baseline
-
-This design was checked against the published `dsh-v0.1.1-rc.2` package and tag on 2026-08-25.
-At that point both npm `latest` and `next` resolved to `0.1.1-rc.2`, and the tag resolved to commit
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
-
-A local compatibility spike used the real `dsh` executable and Web Host with a deterministic mock
-DeepSeek model endpoint. It verified:
+The `dsh-v0.1.1-rc.2` compatibility contract includes:
 
 - Node 22.19.x or 24 and newer, `dsh web --host 127.0.0.1 --port 0 --no-open`, the emitted
   `dsh web: http://...` readiness line, and ephemeral-port binding;
@@ -56,38 +38,17 @@ DeepSeek model endpoint. It verified:
 - restart behavior: durable history survives and the interrupted turn closes with
   `turn/end(kind: interrupted)`, but a pending question is not durable and is not replayed.
 
-The spike resolves the earlier uncertainty about approvals, reasoning, and usage: all three are on
-the tested Web Host wire. It also establishes a compatibility fixture to preserve during
-implementation rather than asking T3's translator to trust documentation alone.
-
-### Review disposition
-
-| Review concern                                | Resolution                                                                                           |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Approvals, reasoning, and usage may be absent | Verified on the real Web Host wire; retain them in the product contract.                             |
-| Pending interactions across restart           | Confirmed lossy; fail the stale T3 request and expose retry.                                         |
-| Version/tag and startup flags                 | `0.1.1-rc.2`, ephemeral port, host binding, no-open, and readiness output verified.                  |
-| Runtime permission modes                      | Added an explicit four-mode mapping with two labeled approximations.                                 |
-| Model options                                 | Reasoning efforts are supported and come from `session.models`.                                      |
-| Missing client surfaces                       | Added the contracts, web, desktop, mobile, settings, diagnostics, and docs inventory.                |
-| Update pin conflicts with `@latest` helper    | Initial maintenance is manual-only; pinned generic updates are separate work.                        |
-| Text-generation session growth                | Auxiliary text generation is explicitly unsupported in the MVP; no scratch sessions are created.     |
-| MCP bridging                                  | Made a release gate because T3 credentials are per-thread and a static shared-host bridge is unsafe. |
-| Windows teardown and cwd aliases              | Reuse existing process-tree and realpath-equivalence precedents.                                     |
-| ACP might be a cheap v0                       | Rejected explicitly because T3's ACP transport cannot replace missing DeepSeek semantics.            |
-
 ## Product contract
 
 DeepSeek Harness appears in the same provider-instance setup used by Codex, Claude, Cursor, Grok,
 and OpenCode. A configured instance must support:
 
-- installation, version, model, and update status in the existing provider UI; credential validity is
-  reported by the first real prompt because catalog discovery does not authenticate;
+- installation, version, model, and update status in the existing provider UI; the status probe
+  reports whether `DEEPSEEK_API_KEY` is configured, while the first prompt validates its value;
 - new sessions, multiple turns, persisted history, and continuation after a T3 server restart;
 - streamed assistant text, reasoning, tool calls and results, plans, and token usage;
 - one-shot approvals, structured user questions, turn interruption, and session stop;
 - image prompts on models that accept DeepSeek's Web Host image content;
-- subagent activity when DeepSeek emits durable subagent events;
 - T3's per-thread permission and plan modes, with the provider-specific fallbacks documented below;
 - isolated provider instances with distinct environment and DeepSeek home directories;
 - web, desktop, and mobile clients without a client-to-DeepSeek connection; and
@@ -218,16 +179,16 @@ current activity state.
 After session creation and before admitting a turn, the adapter applies T3 state through
 DeepSeek's host `commands/execute` route. Permission presets map as follows:
 
-| T3 runtime mode | DeepSeek preset | Contract |
-| `approval-required` | `read-only` | Safest approximation: writes require a model-requested escalation and approval, but harmless read-only commands may run without a prompt. |
-| `auto-accept-edits` | `workspace-write` | Approximation: workspace edits and workspace-confined commands run; escalation outside the workspace still asks. DeepSeek cannot separately auto-allow edits while asking for every command. |
-| `auto` | `workspace-write` | Native match for routine in-workspace work with risky escalation prompts. |
-| `full-access` | `danger-full-access` | Native match: unrestricted sandbox and approval policy `never`. |
+| T3 runtime mode     | DeepSeek preset      | Contract                                                                                                                                                                                     |
+| ------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approval-required` | `read-only`          | Safest approximation: writes require a model-requested escalation and approval, but harmless read-only commands may run without a prompt.                                                    |
+| `auto-accept-edits` | `workspace-write`    | Approximation: workspace edits and workspace-confined commands run; escalation outside the workspace still asks. DeepSeek cannot separately auto-allow edits while asking for every command. |
+| `auto`              | `workspace-write`    | Native match for routine in-workspace work with risky escalation prompts.                                                                                                                    |
+| `full-access`       | `danger-full-access` | Native match: unrestricted sandbox and approval policy `never`.                                                                                                                              |
 
-The web and mobile permission-mode descriptions must show the two DeepSeek-specific approximations
-when this provider is selected. Silently treating all non-full modes alike is rejected. If a future
-DeepSeek release exposes per-tool policy, the compatibility layer may tighten these mappings
-without changing T3's contract.
+The clients retain T3's shared permission-mode vocabulary; this table is the provider-specific
+source of truth for the two approximations. If a future DeepSeek release exposes per-tool policy,
+the compatibility layer may tighten these mappings without changing T3's contract.
 
 T3's `default` interaction mode executes `/plan off` when the DeepSeek projection is active;
 T3's `plan` interaction mode executes `/plan` when it is inactive. The adapter waits for the plan
@@ -308,9 +269,10 @@ or status messages between call and result. `turn.diff.updated` remains owned by
 git-diff pipeline rather than the provider. DeepSeek title projections map to
 `thread.metadata.updated`; host running/idle changes map to `session.state.changed`.
 
-Live events pass through the pure translator. Resume history reconstructs native turn snapshots and
-establishes the last accepted sequence without re-emitting old canonical events. Feeding replay
-through the same translator is required before automatic reconnect is enabled.
+Live events pass through the pure translator. Resume history currently groups the validated native
+events into turn snapshots and establishes the last accepted sequence without re-emitting old
+canonical events. Rebuilding the translator's richer item and projection state from that replay is
+required before automatic reconnect is enabled.
 
 ## Session and data flow
 
@@ -320,8 +282,8 @@ metadata, and subscribes before the first prompt. DeepSeek persists its own nati
 instance home; T3 persists the canonical projection it already owns.
 
 For continuation, T3 starts the runtime, finds the exact stored DeepSeek session, loads its history,
-reconstructs adapter state through the translator, then sends the next prompt. If the native session
-is missing, continuation fails visibly rather than silently creating a blank conversation. Cwd
+reconstructs the native turn snapshots and sequence baseline, then sends the next prompt. If the
+native session is missing, continuation fails visibly rather than silently creating a blank conversation. Cwd
 comparison uses the same lexical-then-realpath equivalence as OpenCode so symlink and `/tmp` aliases
 do not cause false mismatches. A genuinely relocated workspace fails with a recovery action to
 start a new DeepSeek session; the adapter never attaches history to a different directory silently.
@@ -373,75 +335,6 @@ An unknown version is a hard compatibility failure even if the small boot probe 
 cannot exhaustively prove an unversioned event vocabulary. A known version that fails the probe is
 also rejected. This two-key gate favors a clear unavailable provider over plausible but corrupt
 conversation history.
-
-## Verification strategy
-
-The MVP's focused unit tests cover:
-
-- CLI version and readiness-line parsing;
-- settings defaults, environment isolation, and secret redaction;
-- every supported wire envelope and event schema;
-- event translation, live sequence deduplication, todo plans, and turn reconstruction; and
-- provider status, model options, Node/version gates, unsupported text generation, and rollback.
-
-Adapter tests use a deterministic fake DeepSeek Host client to cover:
-
-- new and resumed multi-turn sessions;
-- assistant, reasoning, tools, plans, usage, images, approvals, and questions;
-- the full-access runtime mapping, default plan reset, models, and reasoning efforts; and
-- continuation cursor/history behavior and cwd alias equivalence.
-
-The upstream spike and local executable probe cover the supported real `dsh` release and Web Host
-wire. Before maintainers enable the preview beyond local testing, remaining verification includes
-all runtime-mode mappings, approvals/questions through canonical ingestion, interruption and host
-failure, POSIX/Windows teardown, packaged desktop discovery, and an integrated web/mobile remote
-conversation. Those checks are release gates, not claims made by the first MVP PR.
-
-## Explicitly planned after the MVP
-
-The first PR intentionally leaves these as follow-up work, in priority order:
-
-1. Add an automated real-CLI compatibility fixture covering create, prompt, streamed reasoning,
-   tools, interactions, cancellation, replay, and shutdown. The status probe remains deliberately
-   cheap and validates version, host startup, catalog, and credential-description behavior only.
-2. Run and record the packaged desktop, Windows process teardown, mobile, relay, and tunnel matrix.
-   The canonical server boundary is remote-safe by design, but those product paths are not claimed
-   as release-verified by the MVP.
-3. Add automatic stream reconnect with history gap repair and durable pending-interaction recovery.
-   Until then, stream loss is visible and pending controls do not survive a host restart.
-4. Resolve per-thread T3 MCP injection with an upstream seam or a narrowly versioned companion
-   plugin. Its acceptance test must prove simultaneous sessions cannot receive each other's tools,
-   credentials, or invocation context.
-5. Add provider-backed auxiliary text generation with bounded session cleanup, then project native
-   subagent, job, goal, queue, and fork events where T3 has matching canonical concepts.
-6. Extend generic provider maintenance with an explicitly pinned install target before enabling a
-   one-click DeepSeek update. Broaden the version allowlist only after the compatibility fixture.
-7. Enable the provider by default only after the compatibility, cross-platform, remote, and MCP
-   isolation gates above are satisfied.
-
-The first public release is first-class and compatibility-gated. The provider is selectable
-whenever its driver is present; missing or incompatible installations render an actionable
-unavailable state. There is no hidden generic-ACP fallback because that would silently remove core
-features. If the MCP gate cannot be implemented safely against the supported release, the decision
-returns to maintainers before public enablement rather than shipping cross-thread authority or
-claiming full parity.
-
-## Effort and difficulty
-
-This is high-difficulty adapter work but does not require an orchestration rewrite. For one engineer
-working with a coding agent, the planning estimate is:
-
-| Workstream                                                           | Focused engineering time                                                          |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Protocol client, runtime, compatibility fixture, translator          | 5-8 days                                                                          |
-| Adapter behavior, interactions, modes, continuation, text generation | 5-8 days                                                                          |
-| Contracts, provider setup, web/mobile presentation, docs             | 3-5 days                                                                          |
-| MCP isolation gate                                                   | 3-7 days if a companion plugin is viable; longer if upstream changes are required |
-| Cross-platform, remote, regression, and review hardening             | 3-5 days                                                                          |
-
-The realistic solo elapsed range is three to five weeks, with MCP/upstream uncertainty as the
-critical path. A useful internal build without MCP can exist earlier, but calling it a fully
-first-class public provider before the isolation and cross-surface gates pass would overstate it.
 
 Later DeepSeek capabilities should enter through the same adapter and canonical event model. Native
 forking, queue management, goals, jobs, and broader model-provider routing remain possible without
