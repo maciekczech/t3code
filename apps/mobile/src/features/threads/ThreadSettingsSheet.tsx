@@ -53,7 +53,11 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
-import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-options";
+import {
+  RUNTIME_MODE_CHOICES,
+  runtimeModeChoicesForProvider,
+  selectableChoices,
+} from "./thread-settings-options";
 import {
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -846,6 +850,11 @@ function ThreadSettingsChoiceContent(props: {
 }) {
   const insets = useSafeAreaInsets();
   const session = useThreadSettingsSession();
+  const runtimeProviderDriver =
+    session.pendingModel?.providerDriver ??
+    session.providerGroups
+      .flatMap((group) => group.models)
+      .find((model) => session.isApplied(model))?.providerDriver;
   const descriptorId = props.submenu.kind === "descriptor" ? props.submenu.id : null;
 
   const activeDescriptor =
@@ -858,7 +867,7 @@ function ThreadSettingsChoiceContent(props: {
   const submenuContent =
     props.submenu.kind === "runtime"
       ? {
-          rows: RUNTIME_MODE_CHOICES.map((choice) => ({
+          rows: runtimeModeChoicesForProvider(runtimeProviderDriver).map((choice) => ({
             id: choice.mode,
             label: choice.label,
             description: choice.description,

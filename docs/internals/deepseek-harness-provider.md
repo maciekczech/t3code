@@ -186,9 +186,10 @@ DeepSeek's host `commands/execute` route. Permission presets map as follows:
 | `auto`              | `workspace-write`    | Native match for routine in-workspace work with risky escalation prompts.                                                                                                                    |
 | `full-access`       | `danger-full-access` | Native match: unrestricted sandbox and approval policy `never`.                                                                                                                              |
 
-The clients retain T3's shared permission-mode vocabulary; this table is the provider-specific
-source of truth for the two approximations. If a future DeepSeek release exposes per-tool policy,
-the compatibility layer may tighten these mappings without changing T3's contract.
+The clients retain T3's shared permission-mode labels, but replace the `auto-accept-edits`
+description when DeepSeek Harness is selected so it also names routine workspace commands. This
+table remains the source of truth for the two approximations. If a future DeepSeek release exposes
+per-tool policy, the compatibility layer may tighten these mappings without changing T3's contract.
 
 T3's `default` interaction mode executes `/plan off` when the DeepSeek projection is active;
 T3's `plan` interaction mode executes `/plan` when it is inactive. The adapter waits for the plan

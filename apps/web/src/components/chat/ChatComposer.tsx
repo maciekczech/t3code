@@ -303,6 +303,13 @@ const runtimeModeConfig: Record<
 };
 
 const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
+
+function runtimeModeDescription(mode: RuntimeMode, provider: ProviderDriverKind): string {
+  if (provider === "deepseekHarness" && mode === "auto-accept-edits") {
+    return "Allow workspace edits and routine workspace commands; ask to escalate.";
+  }
+  return runtimeModeConfig[mode].description;
+}
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-composer-drawer-layer="true"]',
   '[data-slot="popover-popup"]',
@@ -345,6 +352,7 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
 }
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
+  provider: ProviderDriverKind;
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
@@ -419,7 +427,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
                         {option.label}
                       </span>
                       <span className="text-muted-foreground text-xs leading-4">
-                        {option.description}
+                        {runtimeModeDescription(mode, props.provider)}
                       </span>
                     </div>
                   </div>
@@ -3533,6 +3541,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         </>
                       ) : null}
                       <ComposerFooterModeControls
+                        provider={selectedProvider}
                         showInteractionModeToggle={
                           composerProviderControls.showInteractionModeToggle
                         }

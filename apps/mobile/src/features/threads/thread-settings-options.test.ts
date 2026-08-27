@@ -1,7 +1,7 @@
 import type { ProviderOptionDescriptor } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { selectableChoices } from "./thread-settings-options";
+import { runtimeModeChoicesForProvider, selectableChoices } from "./thread-settings-options";
 
 const effortDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = {
   id: "effort",
@@ -25,5 +25,15 @@ describe("selectableChoices", () => {
       "medium",
       "high",
     ]);
+  });
+});
+
+describe("runtimeModeChoicesForProvider", () => {
+  it("describes the DeepSeek workspace-write approximation truthfully", () => {
+    const choice = runtimeModeChoicesForProvider("deepseekHarness").find(
+      (candidate) => candidate.mode === "auto-accept-edits",
+    );
+
+    expect(choice?.description).toContain("routine workspace commands");
   });
 });

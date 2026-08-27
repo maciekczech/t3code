@@ -9,11 +9,13 @@ import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
  */
 const HIDDEN_EFFORT_OPTION_IDS: ReadonlySet<string> = new Set(["ultracode"]);
 
-export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
+export type RuntimeModeChoice = {
   readonly mode: RuntimeMode;
   readonly label: string;
   readonly description: string;
-}> = [
+};
+
+export const RUNTIME_MODE_CHOICES: ReadonlyArray<RuntimeModeChoice> = [
   {
     mode: "approval-required",
     label: "Supervised",
@@ -35,6 +37,20 @@ export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
     description: "Allow commands and edits without prompts.",
   },
 ];
+
+export function runtimeModeChoicesForProvider(
+  providerDriver: string | undefined,
+): ReadonlyArray<RuntimeModeChoice> {
+  if (providerDriver !== "deepseekHarness") return RUNTIME_MODE_CHOICES;
+  return RUNTIME_MODE_CHOICES.map((choice) =>
+    choice.mode === "auto-accept-edits"
+      ? {
+          ...choice,
+          description: "Allow workspace edits and routine workspace commands; ask to escalate.",
+        }
+      : choice,
+  );
+}
 
 export function selectableChoices(
   descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
