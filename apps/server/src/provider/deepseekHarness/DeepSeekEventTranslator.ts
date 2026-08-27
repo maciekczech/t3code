@@ -33,6 +33,29 @@ const AssistantChunkData = Schema.Struct({
   step: Schema.Int,
   chunk: Schema.Record(Schema.String, Schema.Unknown),
 });
+const AssistantDeltaChunk = Schema.Struct({
+  type: Schema.Literals(["reasoning-delta", "text-delta"]),
+  index: Schema.Int,
+  text: Schema.String,
+});
+const AssistantToolCallDeltaChunk = Schema.Struct({
+  type: Schema.Literal("tool-call-delta"),
+  id: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+  argumentsDelta: Schema.optionalKey(Schema.String),
+});
+const AssistantUsageChunk = Schema.Struct({
+  type: Schema.Literal("usage"),
+  usage: Schema.Struct({
+    inputTokens: Schema.optionalKey(Schema.Number),
+    outputTokens: Schema.optionalKey(Schema.Number),
+  }),
+});
+const AssistantBlockEndChunk = Schema.Struct({
+  type: Schema.Literal("block-end"),
+  index: Schema.Int,
+  block: Schema.Struct({ type: Schema.Literals(["reasoning", "text"]) }),
+});
 const ToolCallData = Schema.Struct({
   turn: Schema.Int,
   step: Schema.Int,
@@ -54,24 +77,22 @@ const TodoWriteData = Schema.Struct({
     }),
   ),
 });
+const ToolResultMessage = Schema.Struct({
+  source: Schema.Struct({ callId: Schema.String }),
+});
 
 const decodeTurn = Schema.decodeUnknownSync(TurnData);
 const decodeTurnEnd = Schema.decodeUnknownSync(TurnEndData);
 const decodeSessionTitle = Schema.decodeUnknownSync(SessionTitleData);
 const decodeAssistantChunk = Schema.decodeUnknownSync(AssistantChunkData);
+const decodeAssistantDeltaChunk = Schema.decodeUnknownSync(AssistantDeltaChunk);
+const decodeAssistantToolCallDeltaChunk = Schema.decodeUnknownSync(AssistantToolCallDeltaChunk);
+const decodeAssistantUsageChunk = Schema.decodeUnknownSync(AssistantUsageChunk);
+const decodeAssistantBlockEndChunk = Schema.decodeUnknownSync(AssistantBlockEndChunk);
 const decodeToolCall = Schema.decodeUnknownSync(ToolCallData);
 const decodeToolResult = Schema.decodeUnknownSync(ToolResultData);
 const decodeTodoWrite = Schema.decodeUnknownSync(TodoWriteData);
-
-function readString(record: Readonly<Record<string, unknown>>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function readNumber(record: Readonly<Record<string, unknown>>, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === "number" ? value : undefined;
-}
+const decodeToolResultMessage = Schema.decodeUnknownSync(ToolResultMessage);
 
 function turnState(reason: string): "completed" | "failed" | "interrupted" | "cancelled" {
   if (reason === "interrupted") return "interrupted";
@@ -85,6 +106,15 @@ function toolItemType(name: string): "command_execution" | "file_change" | "dyna
   if (kind === "command") return "command_execution";
   if (kind === "fileChange") return "file_change";
   return "dynamic_tool_call";
+}
+
+function assistantBlockItemId(
+  turn: number,
+  step: number,
+  index: number,
+  blockType: "reasoning" | "text",
+): string {
+  return `deepseek-${turn}-${step}-${blockType}-${index}`;
 }
 
 export class DeepSeekEventTranslator {
@@ -189,18 +219,14 @@ export class DeepSeekEventTranslator {
     const turnId = this.#turnIds.get(data.turn);
     if (turnId === undefined) return [];
     const chunk = data.chunk;
-    const chunkType = readString(chunk, "type");
-    const index = readNumber(chunk, "index");
-    const itemId =
-      index === undefined || chunkType === undefined
-        ? undefined
-        : `deepseek-${data.turn}-${data.step}-${chunkType}-${index}`;
+    const chunkType = typeof chunk.type === "string" ? chunk.type : undefined;
 
     if (chunkType === "reasoning-delta" || chunkType === "text-delta") {
-      const text = readString(chunk, "text");
-      if (text === undefined || itemId === undefined) return [];
-      const itemType = chunkType === "reasoning-delta" ? "reasoning" : "assistant_message";
-      const streamKind = chunkType === "reasoning-delta" ? "reasoning_text" : "assistant_text";
+      const decoded = decodeAssistantDeltaChunk(chunk);
+      const blockType = decoded.type === "reasoning-delta" ? "reasoning" : "text";
+      const itemId = assistantBlockItemId(data.turn, data.step, decoded.index, blockType);
+      const itemType = blockType === "reasoning" ? "reasoning" : "assistant_message";
+      const streamKind = blockType === "reasoning" ? "reasoning_text" : "assistant_text";
       const events: DeepSeekTranslatedEvent[] = [];
       if (!this.#startedItems.has(itemId)) {
         this.#startedItems.add(itemId);
@@ -215,7 +241,7 @@ export class DeepSeekEventTranslator {
       }
       events.push({
         type: "content.delta",
-        payload: { streamKind, delta: text },
+        payload: { streamKind, delta: decoded.text },
         turnId,
         itemId,
         createdAtMs: event.time,
@@ -225,11 +251,11 @@ export class DeepSeekEventTranslator {
     }
 
     if (chunkType === "tool-call-delta") {
-      const callId = readString(chunk, "id");
-      const name = readString(chunk, "name") ?? "tool";
-      if (callId === undefined) return [];
+      const decoded = decodeAssistantToolCallDeltaChunk(chunk);
+      const callId = decoded.id;
+      const name = decoded.name ?? "tool";
       this.#toolNames.set(callId, name);
-      const argumentsDelta = readString(chunk, "argumentsDelta");
+      const argumentsDelta = decoded.argumentsDelta;
       const events: DeepSeekTranslatedEvent[] = [];
       if (!this.#startedItems.has(callId)) {
         this.#startedItems.add(callId);
@@ -261,10 +287,9 @@ export class DeepSeekEventTranslator {
     }
 
     if (chunkType === "usage") {
-      const usage = chunk.usage;
-      if (usage === null || typeof usage !== "object" || Array.isArray(usage)) return [];
-      const inputTokens = readNumber(usage as Record<string, unknown>, "inputTokens") ?? 0;
-      const outputTokens = readNumber(usage as Record<string, unknown>, "outputTokens") ?? 0;
+      const usage = decodeAssistantUsageChunk(chunk).usage;
+      const inputTokens = usage.inputTokens ?? 0;
+      const outputTokens = usage.outputTokens ?? 0;
       return [
         {
           type: "thread.token-usage.updated",
@@ -286,11 +311,11 @@ export class DeepSeekEventTranslator {
       ];
     }
 
-    if (chunkType === "block-end" && itemId !== undefined && this.#startedItems.has(itemId)) {
-      const block = chunk.block;
-      if (block === null || typeof block !== "object" || Array.isArray(block)) return [];
-      const blockType = readString(block as Record<string, unknown>, "type");
-      if (blockType !== "reasoning" && blockType !== "text") return [];
+    if (chunkType === "block-end") {
+      const decoded = decodeAssistantBlockEndChunk(chunk);
+      const blockType = decoded.block.type;
+      const itemId = assistantBlockItemId(data.turn, data.step, decoded.index, blockType);
+      if (!this.#startedItems.delete(itemId)) return [];
       return [
         {
           type: "item.completed",
@@ -353,11 +378,7 @@ export class DeepSeekEventTranslator {
     const turnId = this.#turnIds.get(data.turn);
     if (turnId === undefined) return [];
     const message = data.message;
-    if (message === null || typeof message !== "object" || Array.isArray(message)) return [];
-    const source = (message as Record<string, unknown>).source;
-    if (source === null || typeof source !== "object" || Array.isArray(source)) return [];
-    const callId = readString(source as Record<string, unknown>, "callId");
-    if (callId === undefined) return [];
+    const callId = decodeToolResultMessage(message).source.callId;
     const name = this.#toolNames.get(callId) ?? "tool";
     return [
       {

@@ -167,7 +167,7 @@ describe("DeepSeekHostClient", () => {
     await expect(client.listSessions()).rejects.toBeInstanceOf(DeepSeekHostClientError);
   });
 
-  it("treats an unsolicited WebSocket close as a transport failure", async () => {
+  it("reports WebSocket readiness and treats an unsolicited close as a failure", async () => {
     type Listener = (event: Event) => void;
     class ClosingWebSocket {
       static readonly CONNECTING = 0;
@@ -176,7 +176,10 @@ describe("DeepSeekHostClient", () => {
       readonly #listeners = new Map<string, Set<Listener>>();
 
       constructor() {
-        queueMicrotask(() => this.#emit("close"));
+        queueMicrotask(() => {
+          this.#emit("open");
+          this.#emit("close");
+        });
       }
 
       addEventListener(type: string, listener: Listener) {
@@ -200,8 +203,13 @@ describe("DeepSeekHostClient", () => {
       baseUrl: "http://127.0.0.1:3080",
       webSocket: ClosingWebSocket as unknown as typeof WebSocket,
     });
-    const iterator = client.muxEvents(new AbortController().signal)[Symbol.asyncIterator]();
+    let opened = false;
+    const events = client.muxEvents(new AbortController().signal, () => {
+      opened = true;
+    });
+    const iterator = events[Symbol.asyncIterator]();
 
     await expect(iterator.next()).rejects.toThrow(/closed unexpectedly/i);
+    expect(opened).toBe(true);
   });
 });

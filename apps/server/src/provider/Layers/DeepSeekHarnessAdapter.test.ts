@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
@@ -143,11 +144,13 @@ class FakeDeepSeekHostClient extends DeepSeekHostClient {
     this.questionResponses.push(input);
   }
 
-  override muxEvents() {
+  override muxEvents(_signal: AbortSignal, onOpen?: () => void) {
+    onOpen?.();
     return this.mux;
   }
 
-  override hostEvents() {
+  override hostEvents(_signal: AbortSignal, onOpen?: () => void) {
+    onOpen?.();
     return this.host;
   }
 }
@@ -416,6 +419,11 @@ it.effect("waits for the native idle boundary before interrupting or stopping", 
     const threadId = ThreadId.make("thread-cancel-boundary");
     yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "auto" });
     const turn = yield* adapter.sendTurn({ threadId, input: "Keep working" });
+    const turnStarted = yield* Stream.runHead(
+      Stream.filter(adapter.streamEvents, (event) => event.type === "turn.started"),
+    ).pipe(Effect.forkChild);
+    client.mux.push(sessionEvent(1, "turn/start", { turn: 1 }));
+    yield* Fiber.join(turnStarted);
 
     const interrupt = yield* adapter.interruptTurn(threadId, turn.turnId).pipe(Effect.forkChild);
     yield* Effect.yieldNow;
@@ -430,9 +438,12 @@ it.effect("waits for the native idle boundary before interrupting or stopping", 
     const turnCompleted = yield* Stream.runHead(
       Stream.filter(adapter.streamEvents, (event) => event.type === "turn.completed"),
     ).pipe(Effect.forkChild);
-    client.mux.push(sessionEvent(1, "turn/start", { turn: 1 }));
     client.mux.push(sessionEvent(2, "turn/end", { turn: 1, reason: { kind: "interrupted" } }));
-    yield* Fiber.join(turnCompleted);
+    const completed = yield* Fiber.join(turnCompleted);
+    assert.deepInclude(Option.getOrThrow(completed).payload as object, {
+      state: "interrupted",
+      stopReason: "cancelled",
+    });
     yield* adapter.sendTurn({ threadId, input: "Second turn" });
     const stop = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
     yield* Effect.yieldNow;

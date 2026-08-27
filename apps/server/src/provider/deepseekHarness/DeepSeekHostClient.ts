@@ -266,18 +266,25 @@ export class DeepSeekHostClient {
     }
   }
 
-  muxEvents(signal: AbortSignal): AsyncIterable<DeepSeekStreamFrame<DeepSeekMuxFrameType>> {
-    return this.#events("events.mux", DeepSeekMuxFrame, signal);
+  muxEvents(
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ): AsyncIterable<DeepSeekStreamFrame<DeepSeekMuxFrameType>> {
+    return this.#events("events.mux", DeepSeekMuxFrame, signal, onOpen);
   }
 
-  hostEvents(signal: AbortSignal): AsyncIterable<DeepSeekStreamFrame<DeepSeekHostFrameType>> {
-    return this.#events("events.host", DeepSeekHostFrame, signal);
+  hostEvents(
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ): AsyncIterable<DeepSeekStreamFrame<DeepSeekHostFrameType>> {
+    return this.#events("events.host", DeepSeekHostFrame, signal, onOpen);
   }
 
   async *#events<S extends Schema.ConstraintDecoder<unknown>>(
     endpoint: "events.mux" | "events.host",
     frameSchema: S,
     signal: AbortSignal,
+    onOpen?: () => void,
   ): AsyncGenerator<DeepSeekStreamFrame<S["Type"]>> {
     const socket = new this.#webSocket(socketUrl(this.#baseUrl, `/api/${endpoint}`));
     const queued: Array<DeepSeekStreamFrame<S["Type"]>> = [];
@@ -318,11 +325,14 @@ export class DeepSeekHostClient {
       notify();
     };
     const onAbort = () => socket.close();
+    const onSocketOpen = () => onOpen?.();
 
+    socket.addEventListener("open", onSocketOpen);
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
     signal.addEventListener("abort", onAbort, { once: true });
+    if (socket.readyState === this.#webSocket.OPEN) onSocketOpen();
 
     try {
       while (true) {
@@ -342,6 +352,7 @@ export class DeepSeekHostClient {
       }
     } finally {
       signal.removeEventListener("abort", onAbort);
+      socket.removeEventListener("open", onSocketOpen);
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);

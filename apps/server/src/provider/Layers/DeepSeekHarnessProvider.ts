@@ -108,10 +108,8 @@ function flattenModels(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
-export const makePendingDeepSeekHarnessProvider = (
-  settings: DeepSeekHarnessSettings,
-): Effect.Effect<ServerProviderDraft> =>
-  Effect.gen(function* () {
+export const makePendingDeepSeekHarnessProvider = Effect.fn("makePendingDeepSeekHarnessProvider")(
+  function* (settings: DeepSeekHarnessSettings): Effect.fn.Return<ServerProviderDraft> {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     return buildServerProvider({
       presentation: PRESENTATION,
@@ -128,7 +126,8 @@ export const makePendingDeepSeekHarnessProvider = (
           : "DeepSeek Harness is disabled. Enable this developer preview to test it.",
       },
     });
-  });
+  },
+);
 
 export const checkDeepSeekHarnessProviderStatus = Effect.fn("checkDeepSeekHarnessProviderStatus")(
   function* (

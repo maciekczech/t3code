@@ -63,6 +63,26 @@ describe("DeepSeekEventTranslator", () => {
     NodeAssert.notEqual(reasoning[0]?.itemId, text[0]?.itemId);
   });
 
+  it("completes a streamed block with the same item id used by its deltas", () => {
+    const translator = new DeepSeekEventTranslator();
+    translator.setPendingTurnId(TurnId.make("turn-1"));
+    translator.translate({ type: "turn/start", seq: 1, time: 100, data: { turn: 1 } });
+    const delta = translator.translate({
+      type: "assistant/chunk",
+      seq: 2,
+      time: 101,
+      data: { turn: 1, step: 0, chunk: { type: "text-delta", index: 0, text: "Answer" } },
+    });
+    const completed = translator.translate({
+      type: "assistant/chunk",
+      seq: 3,
+      time: 102,
+      data: { turn: 1, step: 0, chunk: { type: "block-end", index: 0, block: { type: "text" } } },
+    });
+    NodeAssert.equal(completed[0]?.type, "item.completed");
+    NodeAssert.equal(completed[0]?.itemId, delta[0]?.itemId);
+  });
+
   it("deduplicates tool starts across argument chunks and durable calls", () => {
     const translator = new DeepSeekEventTranslator();
     translator.setPendingTurnId(TurnId.make("turn-1"));

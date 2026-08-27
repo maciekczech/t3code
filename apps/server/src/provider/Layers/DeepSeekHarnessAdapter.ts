@@ -94,6 +94,7 @@ type DeepSeekPermissionPreset = "read-only" | "workspace-write" | "danger-full-a
 interface TurnBoundary {
   readonly turnId: TurnId;
   readonly completed: Deferred.Deferred<void>;
+  cancellationRequested: boolean;
 }
 
 interface SessionContext {
@@ -103,6 +104,7 @@ interface SessionContext {
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingQuestions: Map<ApprovalRequestId, PendingQuestion>;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
+  readonly completedTurnIds: Set<TurnId>;
   lastSeq: number;
   activeTurnId: TurnId | undefined;
   interactionMode: "unknown" | "default" | "plan";
@@ -377,6 +379,13 @@ export function makeDeepSeekHarnessAdapter(
       context: SessionContext,
       translated: DeepSeekTranslatedEvent,
     ) {
+      if (
+        translated.type === "turn.completed" &&
+        translated.turnId !== undefined &&
+        context.completedTurnIds.has(translated.turnId)
+      ) {
+        return;
+      }
       yield* emit({
         ...(yield* buildBase({
           threadId: context.session.threadId,
@@ -393,7 +402,12 @@ export function makeDeepSeekHarnessAdapter(
           payload: translated.raw,
         },
       } as ProviderRuntimeEvent);
-      if (translated.type === "turn.completed" && translated.turnId === context.activeTurnId) {
+      if (
+        translated.type === "turn.completed" &&
+        translated.turnId !== undefined &&
+        translated.turnId === context.activeTurnId
+      ) {
+        context.completedTurnIds.add(translated.turnId);
         const boundary = context.turnBoundary;
         if (boundary !== undefined && boundary.turnId === translated.turnId) {
           yield* Deferred.succeed(boundary.completed, undefined).pipe(Effect.ignore);
@@ -536,10 +550,43 @@ export function makeDeepSeekHarnessAdapter(
       yield* emitHostFailure(cause, errorClass);
     });
 
+    const completeCancelledTurnAtIdle = Effect.fn(
+      "DeepSeekHarnessAdapter.completeCancelledTurnAtIdle",
+    )(function* (context: SessionContext) {
+      const boundary = context.turnBoundary;
+      const turnId = context.activeTurnId;
+      if (
+        boundary === undefined ||
+        turnId === undefined ||
+        boundary.turnId !== turnId ||
+        !boundary.cancellationRequested
+      ) {
+        return;
+      }
+      context.completedTurnIds.add(turnId);
+      context.translator.clearPendingTurnId(turnId);
+      context.activeTurnId = undefined;
+      context.turnBoundary = undefined;
+      const updatedAt = yield* nowIso;
+      const { activeTurnId: _activeTurnId, ...session } = context.session;
+      context.session = { ...session, status: "ready", updatedAt };
+      yield* emit({
+        ...(yield* buildBase({ threadId: context.session.threadId, turnId })),
+        type: "turn.completed",
+        payload: { state: "interrupted", stopReason: "cancelled" },
+      });
+      yield* Deferred.succeed(boundary.completed, undefined).pipe(Effect.ignore);
+    });
+
     const startPumps = Effect.fn("DeepSeekHarnessAdapter.startPumps")(function* (host: SharedHost) {
       const abortController = new AbortController();
+      const muxReady = yield* Deferred.make<void>();
+      const hostReady = yield* Deferred.make<void>();
+      const effectContext = yield* Effect.context();
       yield* Stream.fromAsyncIterable(
-        host.process.client.muxEvents(abortController.signal),
+        host.process.client.muxEvents(abortController.signal, () => {
+          Effect.runSyncWith(effectContext)(Deferred.succeed(muxReady, undefined));
+        }),
         (cause) => asAdapterError("events.mux", cause),
       ).pipe(
         Stream.runForEach((frame) => handleMuxFrame(frame)),
@@ -547,7 +594,9 @@ export function makeDeepSeekHarnessAdapter(
         Effect.forkIn(host.scope),
       );
       yield* Stream.fromAsyncIterable(
-        host.process.client.hostEvents(abortController.signal),
+        host.process.client.hostEvents(abortController.signal, () => {
+          Effect.runSyncWith(effectContext)(Deferred.succeed(hostReady, undefined));
+        }),
         (cause) => asAdapterError("events.host", cause),
       ).pipe(
         Stream.runForEach((frame) => {
@@ -566,10 +615,8 @@ export function makeDeepSeekHarnessAdapter(
           if (frame.payload.type === "host/session-status") {
             const statusFrame = frame.payload;
             return Effect.gen(function* () {
-              if (!statusFrame.running && context.turnBoundary !== undefined) {
-                yield* Deferred.succeed(context.turnBoundary.completed, undefined).pipe(
-                  Effect.ignore,
-                );
+              if (!statusFrame.running) {
+                yield* completeCancelledTurnAtIdle(context);
               }
               const updatedAt = yield* nowIso;
               context.session = {
@@ -625,6 +672,16 @@ export function makeDeepSeekHarnessAdapter(
         host.scope,
         Effect.sync(() => abortController.abort()),
       );
+      const ready = yield* Effect.all([Deferred.await(muxReady), Deferred.await(hostReady)]).pipe(
+        Effect.timeoutOption("5 seconds"),
+      );
+      if (Option.isNone(ready)) {
+        abortController.abort();
+        return yield* asAdapterError(
+          "events.open",
+          "DeepSeek Harness event streams did not open within 5 seconds.",
+        );
+      }
     });
 
     const ensureHost = Effect.fn("DeepSeekHarnessAdapter.ensureHost")(function* () {
@@ -837,6 +894,7 @@ export function makeDeepSeekHarnessAdapter(
         pendingApprovals: new Map(),
         pendingQuestions: new Map(),
         turns: historicalTurns(providerSessionId, historyEvents),
+        completedTurnIds: new Set(),
         lastSeq,
         activeTurnId: undefined,
         interactionMode: "unknown",
@@ -938,7 +996,7 @@ export function makeDeepSeekHarnessAdapter(
       const turnId = TurnId.make(`deepseek-turn-${yield* makeId}`);
       const completed = yield* Deferred.make<void>();
       context.activeTurnId = turnId;
-      context.turnBoundary = { turnId, completed };
+      context.turnBoundary = { turnId, completed, cancellationRequested: false };
       context.translator.setPendingTurnId(turnId);
       context.turns.push({ id: turnId, items: [] });
       const updatedAt = yield* nowIso;
@@ -992,10 +1050,20 @@ export function makeDeepSeekHarnessAdapter(
         });
       }
       const host = yield* ensureHost();
+      const boundary = context.turnBoundary;
+      if (boundary !== undefined) boundary.cancellationRequested = true;
       yield* Effect.tryPromise({
         try: () => host.process.client.cancel(context.providerSessionId),
         catch: (cause) => asAdapterError("session.cancel", cause),
-      });
+      }).pipe(
+        Effect.tapError(() =>
+          Effect.sync(() => {
+            if (context.turnBoundary === boundary && boundary !== undefined) {
+              boundary.cancellationRequested = false;
+            }
+          }),
+        ),
+      );
       yield* waitForTurnBoundary(context);
     });
 
@@ -1070,10 +1138,20 @@ export function makeDeepSeekHarnessAdapter(
       const context = yield* requireSession(threadId);
       const host = sharedHost;
       if (context.activeTurnId !== undefined && host !== undefined) {
+        const boundary = context.turnBoundary;
+        if (boundary !== undefined) boundary.cancellationRequested = true;
         yield* Effect.tryPromise({
           try: () => host.process.client.cancel(context.providerSessionId),
           catch: (cause) => asAdapterError("session.cancel", cause),
-        });
+        }).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              if (context.turnBoundary === boundary && boundary !== undefined) {
+                boundary.cancellationRequested = false;
+              }
+            }),
+          ),
+        );
         yield* waitForTurnBoundary(context);
       }
       sessions.delete(threadId);
