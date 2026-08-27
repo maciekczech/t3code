@@ -25,6 +25,10 @@ Web Host API is not versioned independently from its executable.
 3. Enable the provider and refresh its status.
 4. Choose one of the discovered models when starting a thread.
 
+The provider status says **API key configured** when the Harness can see the credential reference.
+The key itself never comes back through the Harness status API. DeepSeek validates it on the first
+prompt; if it is rejected, replace the value on this provider instance and retry.
+
 Leave **Binary path** as `dsh` when the executable is on the server's `PATH`. Set an absolute path
 when T3 Code is launched by a desktop app, service, or version manager that has a different path.
 
@@ -59,7 +63,7 @@ DeepSeek Harness runs on loopback and is never exposed directly to a remote brow
 - Updates are manual while T3 Code pins the tested version. Do not update this provider to npm
   `latest` until T3 Code lists that release as supported.
 
-The status probe discovers the model catalog but does not spend a request to validate credentials.
-An invalid API key therefore appears when the first prompt runs. Confirm that the key is attached
-to the correct DeepSeek provider instance, then run `dsh web` in a terminal using the same
-environment to inspect Harness configuration errors.
+The status probe discovers the model catalog and checks whether `DEEPSEEK_API_KEY` is configured,
+but it does not spend a model request to validate the value. An invalid key therefore appears when
+the first prompt runs. Confirm that the key is attached to the correct DeepSeek provider instance,
+then run `dsh web` in a terminal using the same environment to inspect Harness configuration errors.

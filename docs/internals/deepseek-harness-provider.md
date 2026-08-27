@@ -264,10 +264,13 @@ The provider probe reports separately:
 - Web runtime startup or protocol failure;
 - available models and their reported reasoning options.
 
-The snapshot uses DeepSeek's model directory instead of hard-coding it. The tested Web Host can
-return that catalog without validating `DEEPSEEK_API_KEY`, so authentication remains `unknown` in
-the snapshot. A rejected key fails the first prompt visibly; the probe does not spend a model
-request merely to manufacture an authenticated badge.
+The snapshot uses DeepSeek's model directory instead of hard-coding it. Alongside the catalog, the
+probe calls `credentials.describe` for `DEEPSEEK_API_KEY`. That privileged loopback method returns
+only whether the reference is configured, its source, and whether it is writable; it never returns
+the secret. A configured reference is labeled **API key configured**, while a missing reference is
+an actionable unauthenticated state. DeepSeek still validates the key itself on the first prompt,
+and T3 maps missing or rejected-key errors to provider-specific guidance. The probe does not spend
+a model request or claim that a configured key has been accepted by DeepSeek.
 
 Maintenance identifies the npm package `@deepseek-ai/dsh`, but the first release uses T3's existing
 manual-only maintenance capability. The current package-manager helpers always install `@latest`,
@@ -326,7 +329,10 @@ start a new DeepSeek session; the adapter never attaches history to a different 
 An event is acknowledged into adapter state only after schema validation and sequence checking.
 T3's ordinary ingestion worker then turns it into persisted orchestration state. Approval and
 question requests keep their DeepSeek request id in memory so the existing T3 response commands can
-answer the correct pending promise.
+answer the correct pending promise. Submitted question answers remain attached to that request
+until DeepSeek emits `question/resolved`, so the canonical resolved event contains the actual
+answer. The current wire supports only one-time approval; longer-lived approval choices are
+rejected rather than silently weakened.
 
 ## Failure and recovery
 
@@ -343,8 +349,10 @@ answer the correct pending promise.
   stale control and the user retries the turn if needed.
 - Duplicate live events are ignored by native sequence. Resume history establishes the sequence
   baseline before new events are accepted.
-- Cancellation, scope closure, and server shutdown drain pending responses and terminate only the
-  recorded child process.
+- Turn interruption sends `session.cancel` and waits up to five seconds for `turn/end` or the host's
+  idle boundary. Session stop uses the same boundary before it detaches and emits `session.exited`;
+  a timeout is reported instead of claiming the host has stopped. Scope closure and server shutdown
+  terminate only the recorded child process.
 - Secret values and prompt content are excluded from ordinary diagnostics. Translated canonical
   events retain their native payload for ingestion diagnostics; a separate native NDJSON logger is
   not wired in the MVP.
@@ -389,19 +397,27 @@ all runtime-mode mappings, approvals/questions through canonical ingestion, inte
 failure, POSIX/Windows teardown, packaged desktop discovery, and an integrated web/mobile remote
 conversation. Those checks are release gates, not claims made by the first MVP PR.
 
-## Rollout
+## Explicitly planned after the MVP
 
-Delivery is split into gates while retaining one end-to-end target:
+The first PR intentionally leaves these as follow-up work, in priority order:
 
-1. Land the protocol client, real-CLI compatibility fixture, runtime, and pure event translator.
-2. Land the driver, adapter, runtime/plan modes, model options, interactions, continuation,
-   maintenance snapshot, and every web/mobile/desktop presentation seam. Auxiliary text generation
-   remains explicitly unsupported until it can safely share a broadcast-capable host runtime.
-3. Resolve per-thread T3 MCP injection with an upstream seam or a narrowly versioned companion
-   plugin. Its acceptance test proves two simultaneous DeepSeek sessions receive only their own
-   T3 credential and invocation context.
-4. Run the cross-surface and remote-mode matrix, document the shipped limitations, and enable the
-   provider by default.
+1. Add an automated real-CLI compatibility fixture covering create, prompt, streamed reasoning,
+   tools, interactions, cancellation, replay, and shutdown. The status probe remains deliberately
+   cheap and validates version, host startup, catalog, and credential-description behavior only.
+2. Run and record the packaged desktop, Windows process teardown, mobile, relay, and tunnel matrix.
+   The canonical server boundary is remote-safe by design, but those product paths are not claimed
+   as release-verified by the MVP.
+3. Add automatic stream reconnect with history gap repair and durable pending-interaction recovery.
+   Until then, stream loss is visible and pending controls do not survive a host restart.
+4. Resolve per-thread T3 MCP injection with an upstream seam or a narrowly versioned companion
+   plugin. Its acceptance test must prove simultaneous sessions cannot receive each other's tools,
+   credentials, or invocation context.
+5. Add provider-backed auxiliary text generation with bounded session cleanup, then project native
+   subagent, job, goal, queue, and fork events where T3 has matching canonical concepts.
+6. Extend generic provider maintenance with an explicitly pinned install target before enabling a
+   one-click DeepSeek update. Broaden the version allowlist only after the compatibility fixture.
+7. Enable the provider by default only after the compatibility, cross-platform, remote, and MCP
+   isolation gates above are satisfied.
 
 The first public release is first-class and compatibility-gated. The provider is selectable
 whenever its driver is present; missing or incompatible installations render an actionable
