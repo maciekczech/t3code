@@ -1,3 +1,9 @@
+/**
+ * DeepSeekHarnessDriver — provider-instance lifecycle for DeepSeek Harness.
+ *
+ * @module DeepSeekHarnessDriver
+ */
+
 import {
   DeepSeekHarnessSettings,
   ProviderDriverKind,

@@ -30,6 +30,29 @@ const PRESENTATION = {
 } as const;
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
+const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
+
+function errorSnapshot(input: {
+  readonly settings: DeepSeekHarnessSettings;
+  readonly checkedAt: string;
+  readonly installed: boolean;
+  readonly version: string | null;
+  readonly message: string;
+}) {
+  return buildServerProvider({
+    presentation: PRESENTATION,
+    enabled: true,
+    checkedAt: input.checkedAt,
+    models: providerModelsFromSettings([], input.settings.customModels, DEFAULT_CAPABILITIES),
+    probe: {
+      installed: input.installed,
+      version: input.version,
+      status: "error",
+      auth: { status: "unknown" },
+      message: input.message,
+    },
+  });
+}
 
 function flattenModels(
   groups: ReadonlyArray<{
@@ -124,56 +147,38 @@ export const checkDeepSeekHarnessProviderStatus = Effect.fn("checkDeepSeekHarnes
     );
     if (versionExit._tag === "Failure") {
       const detail = deepSeekHarnessRuntimeErrorDetail(Cause.squash(versionExit.cause));
-      return buildServerProvider({
-        presentation: PRESENTATION,
-        enabled: true,
+      return errorSnapshot({
+        settings,
         checkedAt,
-        models: providerModelsFromSettings([], settings.customModels, DEFAULT_CAPABILITIES),
-        probe: {
-          installed: !detail.toLowerCase().includes("enoent"),
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: detail.toLowerCase().includes("enoent")
-            ? "DeepSeek Harness (`dsh`) is not installed or not on PATH."
-            : `Could not inspect DeepSeek Harness: ${detail}`,
-        },
+        installed: !detail.toLowerCase().includes("enoent"),
+        version: null,
+        message: detail.toLowerCase().includes("enoent")
+          ? "DeepSeek Harness (`dsh`) is not installed or not on PATH."
+          : `Could not inspect DeepSeek Harness: ${detail}`,
       });
     }
 
     const version = versionExit.value;
     if (!isSupportedDeepSeekHarnessNodeVersion(process.versions.node)) {
-      return buildServerProvider({
-        presentation: PRESENTATION,
-        enabled: true,
+      return errorSnapshot({
+        settings,
         checkedAt,
-        models: providerModelsFromSettings([], settings.customModels, DEFAULT_CAPABILITIES),
-        probe: {
-          installed: true,
-          version,
-          status: "error",
-          auth: { status: "unknown" },
-          message: `DeepSeek Harness requires Node ${DEEPSEEK_HARNESS_NODE_RANGE}; T3 Code is running Node ${process.versions.node}.`,
-        },
+        installed: true,
+        version,
+        message: `DeepSeek Harness requires Node ${DEEPSEEK_HARNESS_NODE_RANGE}; T3 Code is running Node ${process.versions.node}.`,
       });
     }
     if (!(SUPPORTED_DEEPSEEK_HARNESS_VERSIONS as ReadonlyArray<string>).includes(version)) {
-      return buildServerProvider({
-        presentation: PRESENTATION,
-        enabled: true,
+      return errorSnapshot({
+        settings,
         checkedAt,
-        models: providerModelsFromSettings([], settings.customModels, DEFAULT_CAPABILITIES),
-        probe: {
-          installed: true,
-          version,
-          status: "error",
-          auth: { status: "unknown" },
-          message: `DeepSeek Harness ${version} is unverified. Install ${SUPPORTED_DEEPSEEK_HARNESS_VERSIONS.join(" or ")}.`,
-        },
+        installed: true,
+        version,
+        message: `DeepSeek Harness ${version} is unverified. Install ${SUPPORTED_DEEPSEEK_HARNESS_VERSIONS.join(" or ")}.`,
       });
     }
 
-    const catalogExit = yield* Effect.exit(
+    const probeExit = yield* Effect.exit(
       runtime
         .startHost({
           binaryPath: settings.binaryPath,
@@ -183,7 +188,13 @@ export const checkDeepSeekHarnessProviderStatus = Effect.fn("checkDeepSeekHarnes
         .pipe(
           Effect.flatMap((host) =>
             Effect.tryPromise({
-              try: () => host.client.modelCatalog(),
+              try: async () => {
+                const [catalog, credentials] = await Promise.all([
+                  host.client.modelCatalog(),
+                  host.client.describeCredentials([DEEPSEEK_API_KEY_REF]),
+                ]);
+                return { catalog, credentials };
+              },
               catch: (cause) =>
                 new DeepSeekHarnessRuntimeError({
                   operation: "llm.models",
@@ -195,31 +206,27 @@ export const checkDeepSeekHarnessProviderStatus = Effect.fn("checkDeepSeekHarnes
           Effect.scoped,
         ),
     );
-    if (catalogExit._tag === "Failure") {
-      const detail = deepSeekHarnessRuntimeErrorDetail(Cause.squash(catalogExit.cause));
-      return buildServerProvider({
-        presentation: PRESENTATION,
-        enabled: true,
+    if (probeExit._tag === "Failure") {
+      const detail = deepSeekHarnessRuntimeErrorDetail(Cause.squash(probeExit.cause));
+      return errorSnapshot({
+        settings,
         checkedAt,
-        models: providerModelsFromSettings([], settings.customModels, DEFAULT_CAPABILITIES),
-        probe: {
-          installed: true,
-          version,
-          status: "error",
-          auth: { status: "unknown" },
-          message: `DeepSeek Harness host probe failed: ${detail}`,
-        },
+        installed: true,
+        version,
+        message: `DeepSeek Harness host probe failed: ${detail}`,
       });
     }
 
     const models = providerModelsFromSettings(
-      flattenModels(catalogExit.value.groups),
+      flattenModels(probeExit.value.catalog.groups),
       settings.customModels,
       DEFAULT_CAPABILITIES,
     );
-    const failures = catalogExit.value.failures
+    const failures = probeExit.value.catalog.failures
       .map((failure: { readonly message: string }) => failure.message)
       .filter(Boolean);
+    const credential = probeExit.value.credentials[DEEPSEEK_API_KEY_REF];
+    const configured = credential?.configured === true;
     return buildServerProvider({
       presentation: PRESENTATION,
       enabled: true,
@@ -228,13 +235,20 @@ export const checkDeepSeekHarnessProviderStatus = Effect.fn("checkDeepSeekHarnes
       probe: {
         installed: true,
         version,
-        status: models.length > 0 ? "ready" : "warning",
-        auth: { status: "unknown" },
-        ...(models.length > 0
-          ? failures.length > 0
-            ? { message: `Some DeepSeek model providers failed: ${failures.join("; ")}` }
-            : {}
-          : { message: failures[0] ?? "DeepSeek Harness reported no available models." }),
+        status: !configured ? "error" : models.length > 0 ? "ready" : "warning",
+        auth: configured
+          ? { status: "authenticated", type: "api-key", label: "API key configured" }
+          : { status: "unauthenticated", type: "api-key", label: "DEEPSEEK_API_KEY required" },
+        ...(!configured
+          ? {
+              message:
+                "Add DEEPSEEK_API_KEY to this provider's environment variables. Its validity is confirmed on the first prompt.",
+            }
+          : models.length > 0
+            ? failures.length > 0
+              ? { message: `Some DeepSeek model providers failed: ${failures.join("; ")}` }
+              : {}
+            : { message: failures[0] ?? "DeepSeek Harness reported no available models." }),
       },
     });
   },

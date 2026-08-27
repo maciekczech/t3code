@@ -1,10 +1,18 @@
+/**
+ * DeepSeekHarnessAdapterLive — DeepSeek Harness via its loopback Web Host API.
+ *
+ * @module DeepSeekHarnessAdapterLive
+ */
+
 import {
   ApprovalRequestId,
   EventId,
+  type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
   type RuntimeMode,
@@ -15,11 +23,12 @@ import {
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
@@ -31,7 +40,6 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
-  type ProviderAdapterError,
 } from "../Errors.ts";
 import {
   DeepSeekHarnessRuntime,
@@ -47,6 +55,7 @@ import {
   DeepSeekEventTranslator,
   type DeepSeekTranslatedEvent,
 } from "../deepseekHarness/DeepSeekEventTranslator.ts";
+import { classifyDeepSeekTool } from "../deepseekHarness/DeepSeekToolClassification.ts";
 import type { DeepSeekHarnessAdapterShape } from "../Services/DeepSeekHarnessAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("deepseekHarness");
@@ -71,11 +80,20 @@ export interface DeepSeekHarnessAdapterOptions {
 interface PendingApproval {
   readonly rpcId: string;
   readonly approvalId: string;
+  readonly requestType: "command_execution_approval" | "file_change_approval" | "dynamic_tool_call";
 }
 
 interface PendingQuestion {
   readonly rpcId: string;
   readonly questions: ReadonlyArray<DeepSeekQuestion>;
+  answers?: ProviderUserInputAnswers;
+}
+
+type DeepSeekPermissionPreset = "read-only" | "workspace-write" | "danger-full-access";
+
+interface TurnBoundary {
+  readonly turnId: TurnId;
+  readonly completed: Deferred.Deferred<void>;
 }
 
 interface SessionContext {
@@ -88,7 +106,8 @@ interface SessionContext {
   lastSeq: number;
   activeTurnId: TurnId | undefined;
   interactionMode: "unknown" | "default" | "plan";
-  permissionPreset: "read-only" | "workspace-write" | "danger-full-access" | undefined;
+  permissionPreset: DeepSeekPermissionPreset | undefined;
+  turnBoundary: TurnBoundary | undefined;
 }
 
 interface SharedHost {
@@ -98,7 +117,7 @@ interface SharedHost {
   stopping: boolean;
 }
 
-function runtimePreset(mode: RuntimeMode): "read-only" | "workspace-write" | "danger-full-access" {
+function runtimePreset(mode: RuntimeMode): DeepSeekPermissionPreset {
   switch (mode) {
     case "approval-required":
       return "read-only";
@@ -110,11 +129,28 @@ function runtimePreset(mode: RuntimeMode): "read-only" | "workspace-write" | "da
   }
 }
 
+function deepSeekUserMessage(rawDetail: string): string {
+  const normalized = rawDetail.toLowerCase();
+  if (normalized.includes("no api key") || normalized.includes("missing_credential")) {
+    return "DeepSeek API key is missing. Add DEEPSEEK_API_KEY to this provider's environment variables.";
+  }
+  if (
+    normalized.includes("unauthorized") ||
+    normalized.includes("invalid api key") ||
+    normalized.includes("authentication failed") ||
+    normalized.includes("http 401")
+  ) {
+    return "DeepSeek rejected DEEPSEEK_API_KEY. Replace it in this provider's environment variables and try again.";
+  }
+  return rawDetail;
+}
+
 function asAdapterError(method: string, cause: unknown): ProviderAdapterRequestError {
+  const detail = deepSeekUserMessage(deepSeekHarnessRuntimeErrorDetail(cause));
   return new ProviderAdapterRequestError({
     provider: PROVIDER,
     method,
-    detail: deepSeekHarnessRuntimeErrorDetail(cause),
+    detail,
     cause,
   });
 }
@@ -122,12 +158,9 @@ function asAdapterError(method: string, cause: unknown): ProviderAdapterRequestE
 function requestTypeForTool(
   toolName: string,
 ): "command_execution_approval" | "file_change_approval" | "dynamic_tool_call" {
-  if (toolName === "bash" || toolName === "shell" || toolName === "exec") {
-    return "command_execution_approval";
-  }
-  if (toolName === "write" || toolName === "edit" || toolName === "apply_patch") {
-    return "file_change_approval";
-  }
+  const kind = classifyDeepSeekTool(toolName);
+  if (kind === "command") return "command_execution_approval";
+  if (kind === "fileChange") return "file_change_approval";
   return "dynamic_tool_call";
 }
 
@@ -279,7 +312,7 @@ export function makeDeepSeekHarnessAdapter(
       cause: unknown,
       errorClass: "provider_error" | "transport_error" = "transport_error",
     ) {
-      const message = deepSeekHarnessRuntimeErrorDetail(cause);
+      const message = deepSeekUserMessage(deepSeekHarnessRuntimeErrorDetail(cause));
       yield* Effect.forEach(
         sessions.values(),
         (context) =>
@@ -310,6 +343,12 @@ export function makeDeepSeekHarnessAdapter(
               payload: { message, class: errorClass },
             });
             if (activeTurnId !== undefined) {
+              if (context.turnBoundary?.turnId === activeTurnId) {
+                yield* Deferred.succeed(context.turnBoundary.completed, undefined).pipe(
+                  Effect.ignore,
+                );
+                context.turnBoundary = undefined;
+              }
               yield* emit({
                 ...(yield* buildBase({
                   threadId: context.session.threadId,
@@ -355,6 +394,11 @@ export function makeDeepSeekHarnessAdapter(
         },
       } as ProviderRuntimeEvent);
       if (translated.type === "turn.completed" && translated.turnId === context.activeTurnId) {
+        const boundary = context.turnBoundary;
+        if (boundary !== undefined && boundary.turnId === translated.turnId) {
+          yield* Deferred.succeed(boundary.completed, undefined).pipe(Effect.ignore);
+          context.turnBoundary = undefined;
+        }
         context.activeTurnId = undefined;
         const updatedAt = yield* nowIso;
         const { activeTurnId: _activeTurnId, lastError: _lastError, ...session } = context.session;
@@ -396,15 +440,17 @@ export function makeDeepSeekHarnessAdapter(
         }
         case "approval/requested": {
           const requestId = ApprovalRequestId.make(frame.approvalId);
+          const requestType = requestTypeForTool(frame.toolName);
           context.pendingApprovals.set(requestId, {
             rpcId: input.rpcId,
             approvalId: frame.approvalId,
+            requestType,
           });
           yield* emit({
             ...(yield* buildBase({ threadId, requestId })),
             type: "request.opened",
             payload: {
-              requestType: requestTypeForTool(frame.toolName),
+              requestType,
               detail: frame.reason?.trim() || `DeepSeek Harness wants to run ${frame.toolName}.`,
               options: [
                 { decision: "accept", label: "Allow once" },
@@ -417,12 +463,24 @@ export function makeDeepSeekHarnessAdapter(
         }
         case "approval/resolved": {
           const requestId = ApprovalRequestId.make(frame.approvalId);
+          const pending = context.pendingApprovals.get(requestId);
+          if (pending === undefined) {
+            yield* emit({
+              ...(yield* buildBase({ threadId })),
+              type: "runtime.error",
+              payload: {
+                message: `DeepSeek Harness resolved unknown approval '${frame.approvalId}'.`,
+                class: "provider_error",
+              },
+            });
+            break;
+          }
           context.pendingApprovals.delete(requestId);
           yield* emit({
             ...(yield* buildBase({ threadId, requestId })),
             type: "request.resolved",
             payload: {
-              requestType: "unknown",
+              requestType: pending.requestType,
               decision: frame.outcome,
             },
           });
@@ -443,11 +501,23 @@ export function makeDeepSeekHarnessAdapter(
         }
         case "question/resolved": {
           const requestId = ApprovalRequestId.make(frame.questionRpcId);
+          const pending = context.pendingQuestions.get(requestId);
+          if (pending === undefined) {
+            yield* emit({
+              ...(yield* buildBase({ threadId })),
+              type: "runtime.error",
+              payload: {
+                message: `DeepSeek Harness resolved unknown question '${frame.questionRpcId}'.`,
+                class: "provider_error",
+              },
+            });
+            break;
+          }
           context.pendingQuestions.delete(requestId);
           yield* emit({
             ...(yield* buildBase({ threadId, requestId })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            payload: { answers: frame.outcome === "answered" ? (pending.answers ?? {}) : {} },
           });
           break;
         }
@@ -496,6 +566,11 @@ export function makeDeepSeekHarnessAdapter(
           if (frame.payload.type === "host/session-status") {
             const statusFrame = frame.payload;
             return Effect.gen(function* () {
+              if (!statusFrame.running && context.turnBoundary !== undefined) {
+                yield* Deferred.succeed(context.turnBoundary.completed, undefined).pipe(
+                  Effect.ignore,
+                );
+              }
               const updatedAt = yield* nowIso;
               context.session = {
                 ...context.session,
@@ -522,7 +597,10 @@ export function makeDeepSeekHarnessAdapter(
               emit({
                 ...base,
                 type: "runtime.error",
-                payload: { message: agentError.message, class: "provider_error" },
+                payload: {
+                  message: deepSeekUserMessage(agentError.message),
+                  class: "provider_error",
+                },
               }),
             ),
           );
@@ -631,6 +709,56 @@ export function makeDeepSeekHarnessAdapter(
       }
     });
 
+    const applyModelSelection = Effect.fn("DeepSeekHarnessAdapter.applyModelSelection")(function* (
+      providerSessionId: string,
+      modelSelection: ModelSelection,
+    ) {
+      if (modelSelection.instanceId !== instanceId) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "selectModel",
+          issue: `Model selection belongs to '${modelSelection.instanceId}', expected '${instanceId}'.`,
+        });
+      }
+      const separator = modelSelection.model.indexOf("/");
+      if (separator <= 0 || separator === modelSelection.model.length - 1) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "selectModel",
+          issue: "DeepSeek Harness model selections use 'provider/model'.",
+        });
+      }
+      const host = yield* ensureHost();
+      const reasoningEffort = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+      yield* Effect.tryPromise({
+        try: () =>
+          host.process.client.selectModel({
+            sessionId: providerSessionId,
+            provider: modelSelection.model.slice(0, separator),
+            model: modelSelection.model.slice(separator + 1),
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          }),
+        catch: (cause) => asAdapterError("session.selectModel", cause),
+      });
+    });
+
+    const waitForTurnBoundary = Effect.fn("DeepSeekHarnessAdapter.waitForTurnBoundary")(function* (
+      context: SessionContext,
+    ) {
+      const boundary = context.turnBoundary;
+      if (boundary === undefined) return;
+      const settled = yield* Deferred.await(boundary.completed).pipe(
+        Effect.timeoutOption("5 seconds"),
+      );
+      if (Option.isNone(settled)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.cancel",
+          detail: "DeepSeek Harness did not become idle within 5 seconds after cancellation.",
+        });
+      }
+    });
+
     const startSession: DeepSeekHarnessAdapterShape["startSession"] = Effect.fn(
       "DeepSeekHarnessAdapter.startSession",
     )(function* (input) {
@@ -713,8 +841,12 @@ export function makeDeepSeekHarnessAdapter(
         activeTurnId: undefined,
         interactionMode: "unknown",
         permissionPreset: undefined,
+        turnBoundary: undefined,
       };
       yield* applyModes(context, "default");
+      if (input.modelSelection !== undefined) {
+        yield* applyModelSelection(providerSessionId, input.modelSelection);
+      }
       sessions.set(input.threadId, context);
       threadsByProviderSession.set(providerSessionId, input.threadId);
       yield* emit({
@@ -801,40 +933,12 @@ export function makeDeepSeekHarnessAdapter(
       yield* applyModes(context, interactionMode);
       const modelSelection = input.modelSelection;
       if (modelSelection !== undefined) {
-        if (modelSelection.instanceId !== instanceId) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: `Model selection belongs to '${modelSelection.instanceId}', expected '${instanceId}'.`,
-          });
-        }
-        const separator = modelSelection.model.indexOf("/");
-        if (separator <= 0 || separator === modelSelection.model.length - 1) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "DeepSeek Harness model selections use 'provider/model'.",
-          });
-        }
-        const provider = modelSelection.model.slice(0, separator);
-        const model = modelSelection.model.slice(separator + 1);
-        const reasoningEffort = getModelSelectionStringOptionValue(
-          modelSelection,
-          "reasoningEffort",
-        );
-        yield* Effect.tryPromise({
-          try: () =>
-            host.process.client.selectModel({
-              sessionId: context.providerSessionId,
-              provider,
-              model,
-              ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-            }),
-          catch: (cause) => asAdapterError("session.selectModel", cause),
-        });
+        yield* applyModelSelection(context.providerSessionId, modelSelection);
       }
       const turnId = TurnId.make(`deepseek-turn-${yield* makeId}`);
+      const completed = yield* Deferred.make<void>();
       context.activeTurnId = turnId;
+      context.turnBoundary = { turnId, completed };
       context.translator.setPendingTurnId(turnId);
       context.turns.push({ id: turnId, items: [] });
       const updatedAt = yield* nowIso;
@@ -860,6 +964,7 @@ export function makeDeepSeekHarnessAdapter(
         Effect.tapError(() =>
           Effect.sync(() => {
             context.activeTurnId = undefined;
+            context.turnBoundary = undefined;
             context.translator.clearPendingTurnId(turnId);
             context.turns.pop();
             const { activeTurnId: _activeTurnId, ...session } = context.session;
@@ -876,13 +981,22 @@ export function makeDeepSeekHarnessAdapter(
 
     const interruptTurn: DeepSeekHarnessAdapterShape["interruptTurn"] = Effect.fn(
       "DeepSeekHarnessAdapter.interruptTurn",
-    )(function* (threadId) {
+    )(function* (threadId, turnId) {
       const context = yield* requireSession(threadId);
+      if (context.activeTurnId === undefined) return;
+      if (turnId !== undefined && turnId !== context.activeTurnId) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "interruptTurn",
+          issue: `Turn '${turnId}' is not the active DeepSeek Harness turn.`,
+        });
+      }
       const host = yield* ensureHost();
       yield* Effect.tryPromise({
         try: () => host.process.client.cancel(context.providerSessionId),
         catch: (cause) => asAdapterError("session.cancel", cause),
       });
+      yield* waitForTurnBoundary(context);
     });
 
     const respondToRequest: DeepSeekHarnessAdapterShape["respondToRequest"] = Effect.fn(
@@ -898,22 +1012,23 @@ export function makeDeepSeekHarnessAdapter(
         });
       }
       const host = yield* ensureHost();
+      if (decision === "acceptForSession" || decision === "acceptAlways") {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "respondToRequest",
+          issue: "DeepSeek Harness currently supports Allow once or Reject only.",
+        });
+      }
       yield* Effect.tryPromise({
         try: () =>
           host.process.client.respondToApproval({
             rpcId: pending.rpcId,
             sessionId: context.providerSessionId,
             approvalId: pending.approvalId,
-            outcome:
-              decision === "accept" ||
-              decision === "acceptForSession" ||
-              decision === "acceptAlways"
-                ? "allowed-once"
-                : "rejected",
+            outcome: decision === "accept" ? "allowed-once" : "rejected",
           }),
         catch: (cause) => asAdapterError("respond approval", cause),
       });
-      context.pendingApprovals.delete(requestId);
     });
 
     const respondToUserInput: DeepSeekHarnessAdapterShape["respondToUserInput"] = Effect.fn(
@@ -929,6 +1044,8 @@ export function makeDeepSeekHarnessAdapter(
         });
       }
       const host = yield* ensureHost();
+      const previousAnswers = pending.answers;
+      pending.answers = answers;
       yield* Effect.tryPromise({
         try: () =>
           host.process.client.respondToQuestion({
@@ -937,8 +1054,14 @@ export function makeDeepSeekHarnessAdapter(
             answers: questionAnswers(pending.questions, answers),
           }),
         catch: (cause) => asAdapterError("respond question", cause),
-      });
-      context.pendingQuestions.delete(requestId);
+      }).pipe(
+        Effect.tapError(() =>
+          Effect.sync(() => {
+            if (previousAnswers === undefined) delete pending.answers;
+            else pending.answers = previousAnswers;
+          }),
+        ),
+      );
     });
 
     const stopSession: DeepSeekHarnessAdapterShape["stopSession"] = Effect.fn(
@@ -950,7 +1073,8 @@ export function makeDeepSeekHarnessAdapter(
         yield* Effect.tryPromise({
           try: () => host.process.client.cancel(context.providerSessionId),
           catch: (cause) => asAdapterError("session.cancel", cause),
-        }).pipe(Effect.ignore);
+        });
+        yield* waitForTurnBoundary(context);
       }
       sessions.delete(threadId);
       threadsByProviderSession.delete(context.providerSessionId);

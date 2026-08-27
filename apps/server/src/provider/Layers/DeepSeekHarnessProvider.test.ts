@@ -14,8 +14,11 @@ import { checkDeepSeekHarnessProviderStatus } from "./DeepSeekHarnessProvider.ts
 const decodeSettings = Schema.decodeSync(DeepSeekHarnessSettings);
 
 class CatalogClient extends DeepSeekHostClient {
-  constructor() {
+  readonly credentialConfigured: boolean;
+
+  constructor(credentialConfigured = true) {
     super({ baseUrl: "http://127.0.0.1:3080" });
+    this.credentialConfigured = credentialConfigured;
   }
 
   override async modelCatalog() {
@@ -42,16 +45,26 @@ class CatalogClient extends DeepSeekHostClient {
       failures: [],
     };
   }
+
+  override async describeCredentials() {
+    return {
+      DEEPSEEK_API_KEY: {
+        configured: this.credentialConfigured,
+        writable: true,
+        ...(this.credentialConfigured ? { source: "environment" } : {}),
+      },
+    };
+  }
 }
 
-function runtime(version: string): DeepSeekHarnessRuntimeShape {
+function runtime(version: string, credentialConfigured = true): DeepSeekHarnessRuntimeShape {
   return {
     runCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
     readVersion: () => Effect.succeed(version),
     startHost: () =>
       Effect.succeed({
         url: "http://127.0.0.1:3080",
-        client: new CatalogClient(),
+        client: new CatalogClient(credentialConfigured),
         exitCode: Effect.never,
       }),
   };
@@ -79,7 +92,11 @@ it.effect("publishes discovered models and reasoning effort options", () =>
   Effect.gen(function* () {
     const provider = yield* checkDeepSeekHarnessProviderStatus(decodeSettings({ enabled: true }));
     assert.strictEqual(provider.status, "ready");
-    assert.strictEqual(provider.auth.status, "unknown");
+    assert.deepStrictEqual(provider.auth, {
+      status: "authenticated",
+      type: "api-key",
+      label: "API key configured",
+    });
     assert.deepStrictEqual(
       provider.models.map((model) => model.slug),
       ["deepseek-official/deepseek-chat"],
@@ -97,6 +114,15 @@ it.effect("publishes discovered models and reasoning effort options", () =>
       },
     ]);
   }).pipe(Effect.provideService(DeepSeekHarnessRuntime, runtime("0.1.1-rc.2"))),
+);
+
+it.effect("reports a missing DeepSeek API key as unauthenticated", () =>
+  Effect.gen(function* () {
+    const provider = yield* checkDeepSeekHarnessProviderStatus(decodeSettings({ enabled: true }));
+    assert.strictEqual(provider.status, "error");
+    assert.strictEqual(provider.auth.status, "unauthenticated");
+    assert.match(provider.message ?? "", /DEEPSEEK_API_KEY/);
+  }).pipe(Effect.provideService(DeepSeekHarnessRuntime, runtime("0.1.1-rc.2", false))),
 );
 
 it("matches the upstream Node support range", () => {

@@ -44,6 +44,25 @@ describe("DeepSeekEventTranslator", () => {
     );
   });
 
+  it("uses distinct item ids for reasoning and text at the same chunk index", () => {
+    const translator = new DeepSeekEventTranslator();
+    translator.setPendingTurnId(TurnId.make("turn-1"));
+    translator.translate({ type: "turn/start", seq: 1, time: 100, data: { turn: 1 } });
+    const reasoning = translator.translate({
+      type: "assistant/chunk",
+      seq: 2,
+      time: 101,
+      data: { turn: 1, step: 0, chunk: { type: "reasoning-delta", index: 0, text: "Why" } },
+    });
+    const text = translator.translate({
+      type: "assistant/chunk",
+      seq: 3,
+      time: 102,
+      data: { turn: 1, step: 0, chunk: { type: "text-delta", index: 0, text: "Answer" } },
+    });
+    NodeAssert.notEqual(reasoning[0]?.itemId, text[0]?.itemId);
+  });
+
   it("deduplicates tool starts across argument chunks and durable calls", () => {
     const translator = new DeepSeekEventTranslator();
     translator.setPendingTurnId(TurnId.make("turn-1"));

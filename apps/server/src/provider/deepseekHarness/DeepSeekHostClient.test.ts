@@ -109,6 +109,46 @@ describe("DeepSeekHostClient", () => {
     });
   });
 
+  it("reads credential configuration without requesting secret values", async () => {
+    let requestBody: unknown;
+    const fakeFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { readonly rpcId: string };
+      requestBody = body;
+      return new Response(
+        JSON.stringify({
+          type: "server-response",
+          rpcId: body.rpcId,
+          result: {
+            ok: true,
+            value: {
+              credentials: {
+                DEEPSEEK_API_KEY: {
+                  configured: true,
+                  source: "environment",
+                  writable: true,
+                },
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    const client = new DeepSeekHostClient({
+      baseUrl: "http://127.0.0.1:3080",
+      fetch: fakeFetch,
+    });
+
+    await expect(client.describeCredentials(["DEEPSEEK_API_KEY"])).resolves.toEqual({
+      DEEPSEEK_API_KEY: { configured: true, source: "environment", writable: true },
+    });
+    expect(requestBody).toMatchObject({
+      type: "client-request",
+      method: "credentials.describe",
+      payload: { refs: ["DEEPSEEK_API_KEY"] },
+    });
+  });
+
   it("rejects a mismatched response correlation id", async () => {
     const fakeFetch = (async () =>
       new Response(

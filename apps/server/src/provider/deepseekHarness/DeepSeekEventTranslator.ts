@@ -2,6 +2,7 @@ import type { ProviderRuntimeEvent, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 
 import type { DeepSeekSessionEvent } from "./DeepSeekHostProtocol.ts";
+import { classifyDeepSeekTool } from "./DeepSeekToolClassification.ts";
 
 type EventType = ProviderRuntimeEvent["type"];
 type PayloadFor<T extends EventType> = Extract<
@@ -80,8 +81,9 @@ function turnState(reason: string): "completed" | "failed" | "interrupted" | "ca
 }
 
 function toolItemType(name: string): "command_execution" | "file_change" | "dynamic_tool_call" {
-  if (name === "bash" || name === "shell" || name === "exec") return "command_execution";
-  if (name === "write" || name === "edit" || name === "apply_patch") return "file_change";
+  const kind = classifyDeepSeekTool(name);
+  if (kind === "command") return "command_execution";
+  if (kind === "fileChange") return "file_change";
   return "dynamic_tool_call";
 }
 
@@ -189,7 +191,10 @@ export class DeepSeekEventTranslator {
     const chunk = data.chunk;
     const chunkType = readString(chunk, "type");
     const index = readNumber(chunk, "index");
-    const itemId = index === undefined ? undefined : `deepseek-${data.turn}-${data.step}-${index}`;
+    const itemId =
+      index === undefined || chunkType === undefined
+        ? undefined
+        : `deepseek-${data.turn}-${data.step}-${chunkType}-${index}`;
 
     if (chunkType === "reasoning-delta" || chunkType === "text-delta") {
       const text = readString(chunk, "text");

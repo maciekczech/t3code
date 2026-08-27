@@ -233,6 +233,18 @@ export const DeepSeekLlmModelsValue = Schema.Struct({
 });
 export type DeepSeekLlmModelsValue = typeof DeepSeekLlmModelsValue.Type;
 
+export const DeepSeekCredentialsDescribeValue = Schema.Struct({
+  credentials: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      configured: Schema.Boolean,
+      source: Schema.optionalKey(Schema.String),
+      writable: Schema.Boolean,
+    }),
+  ),
+});
+export type DeepSeekCredentialsDescribeValue = typeof DeepSeekCredentialsDescribeValue.Type;
+
 export const DeepSeekSessionSelectModelValue = Schema.Struct({ selected: DeepSeekModelSelection });
 export const DeepSeekAcceptedValue = Schema.Struct({ accepted: Schema.Literal(true) });
 export const DeepSeekCommandValue = Schema.UndefinedOr(

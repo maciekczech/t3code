@@ -69,6 +69,7 @@ class FakeDeepSeekHostClient extends DeepSeekHostClient {
   readonly selections: Array<{ readonly sessionId: string } & DeepSeekModelSelection> = [];
   readonly approvalResponses: Array<unknown> = [];
   readonly questionResponses: Array<unknown> = [];
+  cancelCount = 0;
   readonly sessionSummaries: Array<DeepSeekSessionSummary> = [];
   readonly historyEvents: Array<DeepSeekSessionEvent> = [];
   #session = 0;
@@ -128,6 +129,10 @@ class FakeDeepSeekHostClient extends DeepSeekHostClient {
     this.prompts.push(
       input.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
     );
+  }
+
+  override async cancel() {
+    this.cancelCount += 1;
   }
 
   override async respondToApproval(input: Parameters<DeepSeekHostClient["respondToApproval"]>[0]) {
@@ -330,12 +335,12 @@ it.effect("maps every runtime mode and resets native plan mode", () => {
   }).pipe(Effect.scoped, Effect.provide(makeTestLayer(client)));
 });
 
-it.effect("routes approvals and structured questions back to their original RPC ids", () => {
+it.effect("routes approvals and preserves structured answers through resolution", () => {
   const client = new FakeDeepSeekHostClient();
   return Effect.gen(function* () {
     const adapter = yield* makeDeepSeekHarnessAdapter({ binaryPath: "dsh" });
     const threadId = ThreadId.make("thread-interactions");
-    const collected = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 4)).pipe(
+    const opened = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 4)).pipe(
       Effect.forkChild,
     );
     yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "approval-required" });
@@ -356,11 +361,33 @@ it.effect("routes approvals and structured questions back to their original RPC 
         questions: [{ id: "target", question: "Which target?", options: [{ label: "web" }] }],
       },
     });
-    yield* Fiber.join(collected);
+    yield* Fiber.join(opened);
     yield* adapter.respondToRequest(threadId, ApprovalRequestId.make("approval-1"), "accept");
     yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make("question-rpc"), {
       target: "web",
     });
+    const resolved = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+      Effect.forkChild,
+    );
+    client.mux.push({
+      rpcId: "approval-resolved",
+      payload: {
+        type: "approval/resolved",
+        sessionId: "session-1",
+        approvalId: "approval-1",
+        outcome: "allowed-once",
+      },
+    });
+    client.mux.push({
+      rpcId: "question-resolved",
+      payload: {
+        type: "question/resolved",
+        sessionId: "session-1",
+        questionRpcId: "question-rpc",
+        outcome: "answered",
+      },
+    });
+    const events = Array.from(yield* Fiber.join(resolved));
 
     assert.deepInclude(client.approvalResponses[0] as object, {
       rpcId: "approval-rpc",
@@ -371,6 +398,71 @@ it.effect("routes approvals and structured questions back to their original RPC 
       rpcId: "question-rpc",
       answers: [{ id: "target", selected: ["web"] }],
     });
+    assert.deepInclude(
+      events.find((event) => event.type === "user-input.resolved")?.payload as object,
+      { answers: { target: "web" } },
+    );
+    assert.deepInclude(
+      events.find((event) => event.type === "request.resolved")?.payload as object,
+      { requestType: "command_execution_approval", decision: "allowed-once" },
+    );
+  }).pipe(Effect.scoped, Effect.provide(makeTestLayer(client)));
+});
+
+it.effect("waits for the native idle boundary before interrupting or stopping", () => {
+  const client = new FakeDeepSeekHostClient();
+  return Effect.gen(function* () {
+    const adapter = yield* makeDeepSeekHarnessAdapter({ binaryPath: "dsh" });
+    const threadId = ThreadId.make("thread-cancel-boundary");
+    yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "auto" });
+    const turn = yield* adapter.sendTurn({ threadId, input: "Keep working" });
+
+    const interrupt = yield* adapter.interruptTurn(threadId, turn.turnId).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    assert.isUndefined(interrupt.pollUnsafe());
+    client.host.push({
+      rpcId: "idle-after-interrupt",
+      payload: { type: "host/session-status", sessionId: "session-1", running: false },
+    });
+    yield* Fiber.join(interrupt);
+    assert.strictEqual(client.cancelCount, 1);
+
+    const turnCompleted = yield* Stream.runHead(
+      Stream.filter(adapter.streamEvents, (event) => event.type === "turn.completed"),
+    ).pipe(Effect.forkChild);
+    client.mux.push(sessionEvent(1, "turn/start", { turn: 1 }));
+    client.mux.push(sessionEvent(2, "turn/end", { turn: 1, reason: { kind: "interrupted" } }));
+    yield* Fiber.join(turnCompleted);
+    yield* adapter.sendTurn({ threadId, input: "Second turn" });
+    const stop = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    assert.isUndefined(stop.pollUnsafe());
+    client.host.push({
+      rpcId: "idle-after-stop",
+      payload: { type: "host/session-status", sessionId: "session-1", running: false },
+    });
+    yield* Fiber.join(stop);
+    assert.strictEqual(client.cancelCount, 2);
+    assert.isFalse(yield* adapter.hasSession(threadId));
+  }).pipe(Effect.scoped, Effect.provide(makeTestLayer(client)));
+});
+
+it.effect("applies the selected model while creating a session", () => {
+  const client = new FakeDeepSeekHostClient();
+  return Effect.gen(function* () {
+    const adapter = yield* makeDeepSeekHarnessAdapter({ binaryPath: "dsh" });
+    yield* adapter.startSession({
+      threadId: ThreadId.make("thread-model-on-start"),
+      cwd: process.cwd(),
+      runtimeMode: "auto",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("deepseekHarness"),
+        model: "deepseek-official/deepseek-chat",
+      },
+    });
+    assert.deepStrictEqual(client.selections, [
+      { sessionId: "session-1", provider: "deepseek-official", model: "deepseek-chat" },
+    ]);
   }).pipe(Effect.scoped, Effect.provide(makeTestLayer(client)));
 });
 

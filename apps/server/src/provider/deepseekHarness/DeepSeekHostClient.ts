@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { Schema } from "effect";
 
 import {
   DeepSeekAcceptedValue,
   DeepSeekCommandValue,
+  DeepSeekCredentialsDescribeValue,
   DeepSeekHostFrame,
   DeepSeekLlmModelsValue,
   DeepSeekMuxFrame,
@@ -83,7 +84,7 @@ export class DeepSeekHostClient {
     valueSchema: S,
     signal?: AbortSignal,
   ): Promise<S["Type"]> {
-    const rpcId = randomUUID();
+    const rpcId = NodeCrypto.randomUUID();
     let response: Response;
     try {
       response = await this.#fetch(new URL(`/api/${method}`, this.#baseUrl), {
@@ -141,6 +142,15 @@ export class DeepSeekHostClient {
 
   modelCatalog(signal?: AbortSignal): Promise<DeepSeekLlmModelsValue> {
     return this.#call("llm.models", {}, DeepSeekLlmModelsValue, signal);
+  }
+
+  describeCredentials(refs: ReadonlyArray<string>, signal?: AbortSignal) {
+    return this.#call(
+      "credentials.describe",
+      { refs },
+      DeepSeekCredentialsDescribeValue,
+      signal,
+    ).then((value) => value.credentials);
   }
 
   selectModel(
