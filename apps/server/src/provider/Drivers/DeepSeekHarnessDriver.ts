@@ -89,94 +89,100 @@ export const DeepSeekHarnessDriver: ProviderDriver<
   metadata: { displayName: "DeepSeek Harness", supportsMultipleInstances: true },
   configSchema: DeepSeekHarnessSettings,
   defaultConfig: () => decodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const runtime = yield* DeepSeekHarnessRuntime;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const httpClient = yield* HttpClient.HttpClient;
-      const serverConfig = yield* ServerConfig;
-      const serverSettings = yield* ServerSettingsService;
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stamp = stampIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies DeepSeekHarnessSettings;
-      const configuredHome = effectiveConfig.homePath.trim();
-      const homePath = path.resolve(
-        configuredHome
-          ? expandHomePath(configuredHome)
-          : path.join(serverConfig.stateDir, "providers", "deepseekHarness", instanceId),
-      );
-      yield* fileSystem.makeDirectory(homePath, { recursive: true }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Could not create DeepSeek Harness home '${homePath}'.`,
-              cause,
-            }),
+  create: Effect.fn("DeepSeekHarnessDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }) {
+    const runtime = yield* DeepSeekHarnessRuntime;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const httpClient = yield* HttpClient.HttpClient;
+    const serverConfig = yield* ServerConfig;
+    const serverSettings = yield* ServerSettingsService;
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stamp = stampIdentity({
+      instanceId,
+      displayName,
+      accentColor,
+      continuationKey: continuationIdentity.continuationKey,
+    });
+    const effectiveConfig = { ...config, enabled } satisfies DeepSeekHarnessSettings;
+    const configuredHome = effectiveConfig.homePath.trim();
+    const homePath = path.resolve(
+      configuredHome
+        ? expandHomePath(configuredHome)
+        : path.join(serverConfig.stateDir, "providers", "deepseekHarness", instanceId),
+    );
+    yield* fileSystem.makeDirectory(homePath, { recursive: true }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: `Could not create DeepSeek Harness home '${homePath}'.`,
+            cause,
+          }),
+      ),
+    );
+    const processEnv = {
+      ...mergeProviderInstanceEnvironment(environment),
+      DSH_HOME: homePath,
+    } satisfies NodeJS.ProcessEnv;
+    const adapter = yield* makeDeepSeekHarnessAdapter(effectiveConfig, {
+      instanceId,
+      environment: processEnv,
+    });
+    const textGeneration = yield* makeDeepSeekHarnessTextGeneration;
+    const checkProvider = checkDeepSeekHarnessProviderStatus(effectiveConfig, processEnv).pipe(
+      Effect.map(stamp),
+      Effect.provideService(DeepSeekHarnessRuntime, runtime),
+    );
+    const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
+    const snapshot = yield* makeManagedServerProvider<
+      ProviderSnapshotSettings<DeepSeekHarnessSettings>
+    >({
+      maintenanceCapabilities: MAINTENANCE,
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: (settings) =>
+        makePendingDeepSeekHarnessProvider(settings.provider).pipe(Effect.map(stamp)),
+      checkProvider,
+      enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+        enrichProviderSnapshotWithVersionAdvisory(snapshot, MAINTENANCE, {
+          enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+        }).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.flatMap(publishSnapshot),
         ),
-      );
-      const processEnv = {
-        ...mergeProviderInstanceEnvironment(environment),
-        DSH_HOME: homePath,
-      } satisfies NodeJS.ProcessEnv;
-      const adapter = yield* makeDeepSeekHarnessAdapter(effectiveConfig, {
-        instanceId,
-        environment: processEnv,
-      });
-      const textGeneration = yield* makeDeepSeekHarnessTextGeneration;
-      const checkProvider = checkDeepSeekHarnessProviderStatus(effectiveConfig, processEnv).pipe(
-        Effect.map(stamp),
-        Effect.provideService(DeepSeekHarnessRuntime, runtime),
-      );
-      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
-      const snapshot = yield* makeManagedServerProvider<
-        ProviderSnapshotSettings<DeepSeekHarnessSettings>
-      >({
-        maintenanceCapabilities: MAINTENANCE,
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          makePendingDeepSeekHarnessProvider(settings.provider).pipe(Effect.map(stamp)),
-        checkProvider,
-        enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, MAINTENANCE, {
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-          }).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap(publishSnapshot),
-          ),
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Failed to build DeepSeek Harness snapshot: ${cause.message ?? String(cause)}`,
-              cause,
-            }),
-        ),
-      );
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        adapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: `Failed to build DeepSeek Harness snapshot: ${cause.message ?? String(cause)}`,
+            cause,
+          }),
+      ),
+    );
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot,
+      adapter,
+      textGeneration,
+    } satisfies ProviderInstance;
+  }),
 };

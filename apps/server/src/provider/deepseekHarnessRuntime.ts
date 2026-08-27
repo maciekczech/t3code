@@ -4,14 +4,13 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -31,14 +30,16 @@ export function isSupportedDeepSeekHarnessNodeVersion(version: string): boolean 
   return satisfiesSemverRange(version, DEEPSEEK_HARNESS_NODE_RANGE);
 }
 
-export class DeepSeekHarnessRuntimeError extends Data.TaggedError("DeepSeekHarnessRuntimeError")<{
-  readonly operation: string;
-  readonly detail: string;
-  readonly cause?: unknown;
-}> {
-  static readonly is = (input: unknown): input is DeepSeekHarnessRuntimeError =>
-    Predicate.isTagged(input, "DeepSeekHarnessRuntimeError");
-}
+export class DeepSeekHarnessRuntimeError extends Schema.TaggedErrorClass<DeepSeekHarnessRuntimeError>()(
+  "DeepSeekHarnessRuntimeError",
+  {
+    operation: Schema.String,
+    detail: Schema.String,
+    cause: Schema.optionalKey(Schema.Unknown),
+  },
+) {}
+
+const isDeepSeekHarnessRuntimeError = Schema.is(DeepSeekHarnessRuntimeError);
 
 export interface DeepSeekHarnessCommandResult {
   readonly stdout: string;
@@ -72,7 +73,7 @@ export interface DeepSeekHarnessRuntimeShape {
 }
 
 export function deepSeekHarnessRuntimeErrorDetail(cause: unknown): string {
-  if (DeepSeekHarnessRuntimeError.is(cause)) return cause.detail;
+  if (isDeepSeekHarnessRuntimeError(cause)) return cause.detail;
   if (cause instanceof Error && cause.message.trim()) return cause.message.trim();
   return String(cause);
 }
@@ -111,7 +112,7 @@ export function resolveDeepSeekHarnessLaunchArgs(input: string | undefined): Rea
 }
 
 function ensureRuntimeError(operation: string, detail: string, cause: unknown) {
-  return DeepSeekHarnessRuntimeError.is(cause)
+  return isDeepSeekHarnessRuntimeError(cause)
     ? cause
     : new DeepSeekHarnessRuntimeError({ operation, detail, cause });
 }
@@ -120,11 +121,15 @@ const makeDeepSeekHarnessRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const hostPlatform = yield* HostProcessPlatform;
 
-  const runCommand: DeepSeekHarnessRuntimeShape["runCommand"] = (input) =>
-    Effect.gen(function* () {
-      const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, input.args, {
-        ...(input.environment === undefined ? {} : { env: input.environment }),
-      });
+  const runCommand: DeepSeekHarnessRuntimeShape["runCommand"] = Effect.fn(
+    "DeepSeekHarnessRuntime.runCommand",
+  )(
+    function* (input) {
+      const spawnCommand = yield* resolveSpawnCommand(
+        input.binaryPath,
+        input.args,
+        input.environment === undefined ? {} : { env: input.environment },
+      );
       const child = yield* spawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           shell: spawnCommand.shell,
@@ -150,192 +155,196 @@ const makeDeepSeekHarnessRuntime = Effect.gen(function* () {
         });
       }
       return { stdout, stderr, code: exitCode };
-    }).pipe(
-      Effect.scoped,
-      Effect.mapError((cause) =>
-        ensureRuntimeError(
-          "runCommand",
-          `Failed to execute ${input.binaryPath}: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
-          cause,
-        ),
+    },
+    Effect.scoped,
+    Effect.mapError((cause) =>
+      ensureRuntimeError(
+        "runCommand",
+        `Failed to execute DeepSeek Harness command: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
+        cause,
       ),
-    );
+    ),
+  );
 
-  const readVersion: DeepSeekHarnessRuntimeShape["readVersion"] = (input) =>
-    runCommand({
+  const readVersion: DeepSeekHarnessRuntimeShape["readVersion"] = Effect.fn(
+    "DeepSeekHarnessRuntime.readVersion",
+  )(function* (input) {
+    const result = yield* runCommand({
       binaryPath: input.binaryPath,
       args: ["--version"],
       ...(input.environment === undefined ? {} : { environment: input.environment }),
-    }).pipe(
-      Effect.flatMap((result) => {
-        if (result.code !== 0) {
-          return new DeepSeekHarnessRuntimeError({
-            operation: "readVersion",
-            detail: `dsh --version exited with code ${result.code}: ${result.stderr.trim()}`,
-          });
-        }
-        const version = parseDeepSeekHarnessVersion(`${result.stdout}\n${result.stderr}`);
-        return version === null
-          ? new DeepSeekHarnessRuntimeError({
-              operation: "readVersion",
-              detail: "Could not parse the DeepSeek Harness version.",
-            })
-          : Effect.succeed(version);
-      }),
+    });
+    if (result.code !== 0) {
+      return yield* new DeepSeekHarnessRuntimeError({
+        operation: "readVersion",
+        detail: `dsh --version exited with code ${result.code}: ${result.stderr.trim()}`,
+      });
+    }
+    const version = parseDeepSeekHarnessVersion(`${result.stdout}\n${result.stderr}`);
+    if (version === null) {
+      return yield* new DeepSeekHarnessRuntimeError({
+        operation: "readVersion",
+        detail: "Could not parse the DeepSeek Harness version.",
+      });
+    }
+    return version;
+  });
+
+  const startHost: DeepSeekHarnessRuntimeShape["startHost"] = Effect.fn(
+    "DeepSeekHarnessRuntime.startHost",
+  )(function* (input) {
+    const runtimeScope = yield* Scope.Scope;
+    if (!isSupportedDeepSeekHarnessNodeVersion(process.versions.node)) {
+      return yield* new DeepSeekHarnessRuntimeError({
+        operation: "startHost",
+        detail: `DeepSeek Harness requires Node ${DEEPSEEK_HARNESS_NODE_RANGE}; T3 Code is running Node ${process.versions.node}.`,
+      });
+    }
+    const version = yield* readVersion(input);
+    if (!(SUPPORTED_DEEPSEEK_HARNESS_VERSIONS as ReadonlyArray<string>).includes(version)) {
+      return yield* new DeepSeekHarnessRuntimeError({
+        operation: "startHost",
+        detail: `Unsupported DeepSeek Harness ${version}; install ${SUPPORTED_DEEPSEEK_HARNESS_VERSIONS.join(" or ")}.`,
+      });
+    }
+
+    const extraArgs = yield* Effect.try({
+      try: () => resolveDeepSeekHarnessLaunchArgs(input.launchArgs),
+      catch: (cause) =>
+        ensureRuntimeError(
+          "startHost",
+          `Invalid DeepSeek Harness launch arguments: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
+          cause,
+        ),
+    });
+    const args = ["web", "--host", "127.0.0.1", "--port", "0", "--no-open", ...extraArgs];
+    const spawnCommand = yield* resolveSpawnCommand(
+      input.binaryPath,
+      args,
+      input.environment === undefined ? {} : { env: input.environment },
     );
-
-  const startHost: DeepSeekHarnessRuntimeShape["startHost"] = (input) =>
-    Effect.gen(function* () {
-      const runtimeScope = yield* Scope.Scope;
-      if (!isSupportedDeepSeekHarnessNodeVersion(process.versions.node)) {
-        return yield* new DeepSeekHarnessRuntimeError({
-          operation: "startHost",
-          detail: `DeepSeek Harness requires Node ${DEEPSEEK_HARNESS_NODE_RANGE}; T3 Code is running Node ${process.versions.node}.`,
-        });
-      }
-      const version = yield* readVersion(input);
-      if (!(SUPPORTED_DEEPSEEK_HARNESS_VERSIONS as ReadonlyArray<string>).includes(version)) {
-        return yield* new DeepSeekHarnessRuntimeError({
-          operation: "startHost",
-          detail: `Unsupported DeepSeek Harness ${version}; install ${SUPPORTED_DEEPSEEK_HARNESS_VERSIONS.join(" or ")}.`,
-        });
-      }
-
-      const extraArgs = yield* Effect.try({
-        try: () => resolveDeepSeekHarnessLaunchArgs(input.launchArgs),
-        catch: (cause) =>
+    const child = yield* spawner
+      .spawn(
+        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+          detached: hostPlatform !== "win32",
+          shell: spawnCommand.shell,
+          ...(input.environment === undefined
+            ? { extendEnv: true }
+            : { env: input.environment, extendEnv: false }),
+        }),
+      )
+      .pipe(
+        Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.mapError((cause) =>
           ensureRuntimeError(
             "startHost",
-            `Invalid DeepSeek Harness launch arguments: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
+            `Failed to spawn DeepSeek Harness: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
             cause,
           ),
-      });
-      const args = ["web", "--host", "127.0.0.1", "--port", "0", "--no-open", ...extraArgs];
-      const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, args, {
-        ...(input.environment === undefined ? {} : { env: input.environment }),
-      });
-      const child = yield* spawner
-        .spawn(
-          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-            detached: hostPlatform !== "win32",
-            shell: spawnCommand.shell,
-            ...(input.environment === undefined
-              ? { extendEnv: true }
-              : { env: input.environment, extendEnv: false }),
-          }),
-        )
-        .pipe(
-          Effect.provideService(Scope.Scope, runtimeScope),
-          Effect.mapError((cause) =>
-            ensureRuntimeError(
-              "startHost",
-              `Failed to spawn DeepSeek Harness: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
-              cause,
-            ),
-          ),
-        );
-
-      const killGroup = (signal: NodeJS.Signals) =>
-        hostPlatform === "win32"
-          ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
-          : Effect.sync(() => {
-              try {
-                process.kill(-Number(child.pid), signal);
-              } catch {
-                // The scoped child may already have exited.
-              }
-            });
-      yield* Scope.addFinalizer(
-        runtimeScope,
-        killGroup("SIGTERM").pipe(
-          Effect.andThen(Effect.sleep("1 second")),
-          Effect.andThen(killGroup("SIGKILL")),
-          Effect.ignore,
         ),
       );
 
-      const stdoutRef = yield* Ref.make("");
-      const stderrRef = yield* Ref.make("");
-      const ready = yield* Deferred.make<string, DeepSeekHarnessRuntimeError>();
-      yield* child.stdout.pipe(
-        Stream.decodeText(),
-        Stream.runForEach((chunk) =>
-          Ref.updateAndGet(stdoutRef, (current) => `${current}${chunk}`).pipe(
-            Effect.flatMap((current) => {
-              const url = parseDeepSeekHarnessReadyUrl(current);
-              return url === null ? Effect.void : Deferred.succeed(ready, url).pipe(Effect.ignore);
+    const killGroup = (signal: NodeJS.Signals) =>
+      hostPlatform === "win32"
+        ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
+        : Effect.sync(() => {
+            try {
+              process.kill(-Number(child.pid), signal);
+            } catch {
+              // The scoped child may already have exited.
+            }
+          });
+    yield* Scope.addFinalizer(
+      runtimeScope,
+      killGroup("SIGTERM").pipe(
+        Effect.andThen(Effect.sleep("1 second")),
+        Effect.andThen(killGroup("SIGKILL")),
+        Effect.ignore,
+      ),
+    );
+
+    const stdoutRef = yield* Ref.make("");
+    const stderrRef = yield* Ref.make("");
+    const ready = yield* Deferred.make<string, DeepSeekHarnessRuntimeError>();
+    yield* child.stdout.pipe(
+      Stream.decodeText(),
+      Stream.runForEach((chunk) =>
+        Ref.updateAndGet(stdoutRef, (current) => `${current}${chunk}`).pipe(
+          Effect.flatMap((current) => {
+            const url = parseDeepSeekHarnessReadyUrl(current);
+            return url === null ? Effect.void : Deferred.succeed(ready, url).pipe(Effect.ignore);
+          }),
+        ),
+      ),
+      Effect.ignore,
+      Effect.forkIn(runtimeScope),
+    );
+    yield* child.stderr.pipe(
+      Stream.decodeText(),
+      Stream.runForEach((chunk) =>
+        Ref.update(stderrRef, (current) =>
+          `${current}${chunk}`.slice(-MAX_DIAGNOSTIC_OUTPUT_BYTES),
+        ),
+      ),
+      Effect.ignore,
+      Effect.forkIn(runtimeScope),
+    );
+    yield* child.exitCode.pipe(
+      Effect.flatMap((code) =>
+        Effect.gen(function* () {
+          const stderr = yield* Ref.get(stderrRef);
+          yield* Deferred.fail(
+            ready,
+            new DeepSeekHarnessRuntimeError({
+              operation: "startHost",
+              detail: `DeepSeek Harness exited before readiness (code ${Number(code)}).${stderr.trim() ? `\n${stderr.trim()}` : ""}`,
             }),
-          ),
-        ),
-        Effect.ignore,
-        Effect.forkIn(runtimeScope),
-      );
-      yield* child.stderr.pipe(
-        Stream.decodeText(),
-        Stream.runForEach((chunk) =>
-          Ref.update(stderrRef, (current) =>
-            `${current}${chunk}`.slice(-MAX_DIAGNOSTIC_OUTPUT_BYTES),
-          ),
-        ),
-        Effect.ignore,
-        Effect.forkIn(runtimeScope),
-      );
-      yield* child.exitCode.pipe(
-        Effect.flatMap((code) =>
-          Effect.gen(function* () {
-            const stderr = yield* Ref.get(stderrRef);
-            yield* Deferred.fail(
-              ready,
-              new DeepSeekHarnessRuntimeError({
-                operation: "startHost",
-                detail: `DeepSeek Harness exited before readiness (code ${Number(code)}).${stderr.trim() ? `\n${stderr.trim()}` : ""}`,
-              }),
-            ).pipe(Effect.ignore);
-          }),
-        ),
-        Effect.ignore,
-        Effect.forkIn(runtimeScope),
-      );
+          ).pipe(Effect.ignore);
+        }),
+      ),
+      Effect.ignore,
+      Effect.forkIn(runtimeScope),
+    );
 
-      const readyExit = yield* Effect.exit(
-        Deferred.await(ready).pipe(
-          Effect.timeoutOption(input.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS),
-        ),
+    const readyExit = yield* Effect.exit(
+      Deferred.await(ready).pipe(
+        Effect.timeoutOption(input.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS),
+      ),
+    );
+    if (Exit.isFailure(readyExit)) {
+      const cause = Cause.squash(readyExit.cause);
+      return yield* ensureRuntimeError(
+        "startHost",
+        `Failed while waiting for DeepSeek Harness: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
+        cause,
       );
-      if (Exit.isFailure(readyExit)) {
-        const cause = Cause.squash(readyExit.cause);
-        return yield* ensureRuntimeError(
-          "startHost",
-          `Failed while waiting for DeepSeek Harness: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
-          cause,
-        );
-      }
-      if (Option.isNone(readyExit.value)) {
-        return yield* new DeepSeekHarnessRuntimeError({
-          operation: "startHost",
-          detail: `Timed out waiting for DeepSeek Harness after ${input.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS}ms.`,
-        });
-      }
-      const url = readyExit.value.value;
-      const client = new DeepSeekHostClient({ baseUrl: url });
-      yield* Effect.tryPromise({
-        try: () => client.listSessions(),
-        catch: (cause) =>
-          new DeepSeekHarnessRuntimeError({
-            operation: "startHost",
-            detail: `DeepSeek Harness boot probe failed: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
-            cause,
-          }),
+    }
+    if (Option.isNone(readyExit.value)) {
+      return yield* new DeepSeekHarnessRuntimeError({
+        operation: "startHost",
+        detail: `Timed out waiting for DeepSeek Harness after ${input.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS}ms.`,
       });
-      return {
-        url,
-        client,
-        exitCode: child.exitCode.pipe(
-          Effect.map(Number),
-          Effect.orElseSucceed(() => 0),
-        ),
-      };
+    }
+    const url = readyExit.value.value;
+    const client = new DeepSeekHostClient({ baseUrl: url });
+    yield* Effect.tryPromise({
+      try: () => client.listSessions(),
+      catch: (cause) =>
+        new DeepSeekHarnessRuntimeError({
+          operation: "startHost",
+          detail: `DeepSeek Harness boot probe failed: ${deepSeekHarnessRuntimeErrorDetail(cause)}`,
+          cause,
+        }),
     });
+    return {
+      url,
+      client,
+      exitCode: child.exitCode.pipe(
+        Effect.map(Number),
+        Effect.orElseSucceed(() => 0),
+      ),
+    };
+  });
 
   return { runCommand, readVersion, startHost } satisfies DeepSeekHarnessRuntimeShape;
 });

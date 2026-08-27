@@ -56,6 +56,12 @@ const AssistantBlockEndChunk = Schema.Struct({
   index: Schema.Int,
   block: Schema.Struct({ type: Schema.Literals(["reasoning", "text"]) }),
 });
+const AssistantChunk = Schema.Union([
+  AssistantDeltaChunk,
+  AssistantToolCallDeltaChunk,
+  AssistantUsageChunk,
+  AssistantBlockEndChunk,
+]);
 const ToolCallData = Schema.Struct({
   turn: Schema.Int,
   step: Schema.Int,
@@ -89,6 +95,7 @@ const decodeAssistantDeltaChunk = Schema.decodeUnknownSync(AssistantDeltaChunk);
 const decodeAssistantToolCallDeltaChunk = Schema.decodeUnknownSync(AssistantToolCallDeltaChunk);
 const decodeAssistantUsageChunk = Schema.decodeUnknownSync(AssistantUsageChunk);
 const decodeAssistantBlockEndChunk = Schema.decodeUnknownSync(AssistantBlockEndChunk);
+const decodeAssistantChunkVariant = Schema.decodeUnknownSync(AssistantChunk);
 const decodeToolCall = Schema.decodeUnknownSync(ToolCallData);
 const decodeToolResult = Schema.decodeUnknownSync(ToolResultData);
 const decodeTodoWrite = Schema.decodeUnknownSync(TodoWriteData);
@@ -218,8 +225,8 @@ export class DeepSeekEventTranslator {
     const data = decodeAssistantChunk(event.data);
     const turnId = this.#turnIds.get(data.turn);
     if (turnId === undefined) return [];
-    const chunk = data.chunk;
-    const chunkType = typeof chunk.type === "string" ? chunk.type : undefined;
+    const chunk = decodeAssistantChunkVariant(data.chunk);
+    const chunkType = chunk.type;
 
     if (chunkType === "reasoning-delta" || chunkType === "text-delta") {
       const decoded = decodeAssistantDeltaChunk(chunk);
