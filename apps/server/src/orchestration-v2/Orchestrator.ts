@@ -7904,13 +7904,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
   /**
-   * `squash` is set by squash and unsquash, which replace the whole message: its context is
-   * the command's (absent = none) and its squash record is `squash.from` (absent = none).
+   * `squashedFrom` is set by squash, which replaces the whole message: its context becomes the
+   * command's (absent = none) and it remembers what it replaced.
    */
   const dispatchQueuedRunEdit = (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    squash?: { readonly from?: OrchestrationV2SquashedFrom },
+    squashedFrom?: OrchestrationV2SquashedFrom,
   ) =>
     Effect.gen(function* () {
       if (command.text.trim().length === 0) {
@@ -7973,11 +7973,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
         payload: {
-          ...(squash === undefined ? queuedMessage : withoutSquashState(queuedMessage)),
+          ...(squashedFrom === undefined ? queuedMessage : withoutSquashState(queuedMessage)),
           text: command.text,
           ...editedAttachments,
           ...(command.context ? { context: command.context } : {}),
-          ...(squash?.from ? { squashedFrom: squash.from } : {}),
+          ...(squashedFrom ? { squashedFrom } : {}),
           updatedAt: now,
         },
       });
@@ -7990,7 +7990,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerInstanceId: queuedRun.providerInstanceId,
           occurredAt: now,
           payload: {
-            ...(squash === undefined ? queuedTurnItem : withoutContext(queuedTurnItem)),
+            ...(squashedFrom === undefined ? queuedTurnItem : withoutContext(queuedTurnItem)),
             text: command.text,
             ...editedAttachments,
             ...(command.context ? { context: command.context } : {}),
@@ -8094,15 +8094,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
         events,
         {
-          from: {
-            text: original.text,
-            attachments: original.attachments,
-            ...(original.context ? { context: original.context } : {}),
-            absorbedRunIds: [
-              ...(kept.message.squashedFrom?.absorbedRunIds ?? []),
-              ...absorbed.map(({ run }) => run.id),
-            ],
-          },
+          text: original.text,
+          attachments: original.attachments,
+          ...(original.context ? { context: original.context } : {}),
+          absorbedRunIds: [
+            ...(kept.message.squashedFrom?.absorbedRunIds ?? []),
+            ...absorbed.map(({ run }) => run.id),
+          ],
         },
       );
     });
@@ -8119,9 +8117,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause,
         });
       const projection = yield* projectionStore
-        .getThreadRecords(command.threadId, ["runs", "messages", "nodes", "attempts"], {
-          messageRoles: ["user"],
-        })
+        .getThreadRecords(
+          command.threadId,
+          ["runs", "messages", "nodes", "attempts", "turnItems"],
+          { turnItemTypes: ["user_message"], messageRoles: ["user"] },
+        )
         .pipe(
           Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
         );
@@ -8129,85 +8129,88 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (kept === undefined || kept.status !== "queued") {
         return yield* reject(`Run ${command.runId} is not queued.`);
       }
-      const squashedFrom = projection.messages.find(
-        (candidate) => candidate.id === kept.userMessageId,
-      )?.squashedFrom;
-      if (squashedFrom === undefined) {
+      const messageOf = (run: OrchestrationV2Run) =>
+        projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      if (messageOf(kept)?.squashedFrom === undefined) {
         return yield* reject(`Run ${command.runId} is not a squashed message.`);
       }
-      const absorbed: Array<OrchestrationV2Run> = [];
-      for (const runId of squashedFrom.absorbedRunIds) {
-        const run = projection.runs.find((candidate) => candidate.id === runId);
-        if (run === undefined || run.status !== "cancelled") {
-          return yield* reject(`Squashed run ${runId} can no longer be restored.`);
+      // An absorbed message may be a squash itself, so the kept run expands into every
+      // original run in the order the messages were written.
+      const originals: Array<OrchestrationV2Run> = [];
+      const pending = [kept];
+      for (let run = pending.shift(); run !== undefined; run = pending.shift()) {
+        originals.push(run);
+        const absorbed: Array<OrchestrationV2Run> = [];
+        for (const runId of messageOf(run)?.squashedFrom?.absorbedRunIds ?? []) {
+          const absorbedRun = projection.runs.find((candidate) => candidate.id === runId);
+          if (absorbedRun === undefined || absorbedRun.status !== "cancelled") {
+            return yield* reject(`Squashed run ${runId} can no longer be restored.`);
+          }
+          absorbed.push(absorbedRun);
         }
-        absorbed.push(run);
+        pending.unshift(...absorbed);
       }
-
-      yield* dispatchQueuedRunEdit(
-        {
-          type: "queued-run.edit",
-          commandId: command.commandId,
-          threadId: command.threadId,
-          runId: kept.id,
-          text: squashedFrom.text,
-          attachments: squashedFrom.attachments,
-          ...(squashedFrom.context ? { context: squashedFrom.context } : {}),
-        },
-        events,
-        {},
-      );
 
       const now = yield* DateTime.now;
       const emitEvent = emit(events, command);
-      // Reverses dispatchQueuedRunCancel for each absorbed run.
-      for (const run of absorbed) {
+      const queuedOrder = queuedRunsInDeliveryOrder(projection).flatMap((run) =>
+        run.id === kept.id ? originals : [run],
+      );
+      for (const run of originals) {
+        const scope = {
+          threadId: command.threadId,
+          runId: run.id,
+          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+        };
+        const message = messageOf(run);
+        if (message?.squashedFrom !== undefined) {
+          const { absorbedRunIds: _absorbedRunIds, ...original } = message.squashedFrom;
+          yield* emitEvent({
+            ...scope,
+            type: "message.updated",
+            payload: { ...withoutSquashState(message), ...original, updatedAt: now },
+          });
+          const turnItem = projection.turnItems.find(
+            (candidate) => candidate.type === "user_message" && candidate.messageId === message.id,
+          );
+          if (turnItem !== undefined && turnItem.type === "user_message") {
+            yield* emitEvent({
+              ...scope,
+              type: "turn-item.updated",
+              payload: { ...withoutContext(turnItem), ...original, updatedAt: now },
+            });
+          }
+        }
+        if (run.id === kept.id) continue;
+        // Reverses dispatchQueuedRunCancel.
         const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
         const attempt = projection.attempts.find(
           (candidate) => candidate.id === run.activeAttemptId,
         );
-        if (rootNode === undefined) continue;
-        const scope = {
-          threadId: command.threadId,
-          runId: run.id,
-          nodeId: rootNode.id,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-        };
-        if (attempt !== undefined) {
+        if (attempt !== undefined && rootNode !== undefined) {
           yield* emitEvent({
             ...scope,
             type: "run-attempt.updated",
+            nodeId: rootNode.id,
             payload: { ...attempt, status: "pending", completedAt: null },
           });
         }
-        yield* emitEvent({
-          ...scope,
-          type: "node.updated",
-          payload: { ...rootNode, status: "pending", completedAt: null },
-        });
+        if (rootNode !== undefined) {
+          yield* emitEvent({
+            ...scope,
+            type: "node.updated",
+            nodeId: rootNode.id,
+            payload: { ...rootNode, status: "pending", completedAt: null },
+          });
+        }
       }
       // The restored runs rejoin the queue right after the message that absorbed them.
-      const restored = new Set(absorbed.map((run) => run.id));
-      const reordered = queuedRunsInDeliveryOrder(projection).flatMap((run) =>
-        run.id === kept.id ? [run, ...absorbed] : [run],
-      );
-      yield* Effect.forEach(reordered, (run, index) => {
+      yield* Effect.forEach(queuedOrder, (run, index) => {
         const queuePosition = index + 1;
-        if (!restored.has(run.id)) {
-          return run.queuePosition === queuePosition
-            ? Effect.void
-            : emitEvent({
-                type: "run.updated",
-                threadId: command.threadId,
-                runId: run.id,
-                ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: now,
-                payload: { ...run, queuePosition },
-              });
-        }
-        const { queueHeld: _queueHeld, ...queuedRun } = run;
+        if (run.status === "queued" && run.queuePosition === queuePosition) return Effect.void;
+        const { queueHeld: _queueHeld, ...restored } = run;
         return emitEvent({
           type: "run.updated",
           threadId: command.threadId,
@@ -8215,13 +8218,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: {
-            ...queuedRun,
-            status: "queued",
-            ...(kept.queueHeld === true ? { queueHeld: true } : {}),
-            queuePosition,
-            completedAt: null,
-          },
+          payload:
+            run.status === "queued"
+              ? { ...run, queuePosition }
+              : {
+                  ...restored,
+                  status: "queued",
+                  ...(kept.queueHeld === true ? { queueHeld: true } : {}),
+                  queuePosition,
+                  completedAt: null,
+                },
         });
       });
     });

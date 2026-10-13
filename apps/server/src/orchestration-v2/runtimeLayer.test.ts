@@ -4482,6 +4482,40 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           .map((attempt) => attempt.status),
         ["pending", "pending"],
       );
+
+      // Absorbing a message that is itself a squash still unsquashes into every original.
+      yield* orchestrator.dispatch({
+        type: "queued-runs.squash",
+        commandId: CommandId.make("runtime-layer-queued-squash-inner"),
+        threadId,
+        runIds: [first.id, third.id],
+        text: "Edited inner squash",
+      });
+      yield* orchestrator.dispatch({
+        type: "queued-runs.squash",
+        commandId: CommandId.make("runtime-layer-queued-squash-outer"),
+        threadId,
+        runIds: [second.id, first.id],
+      });
+      yield* orchestrator.dispatch({
+        type: "queued-run.unsquash",
+        commandId: CommandId.make("runtime-layer-queued-unsquash-nested"),
+        threadId,
+        runId: second.id,
+      });
+      const nested = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        nested.runs
+          .filter((run) => run.status === "queued")
+          .toSorted((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0))
+          .map((run) => nested.messages.find((message) => message.id === run.userMessageId))
+          .map((message) => [message?.text, message?.squashedFrom]),
+        [
+          ["Second", undefined],
+          ["First", undefined],
+          ["Third", undefined],
+        ],
+      );
     }),
   );
 
