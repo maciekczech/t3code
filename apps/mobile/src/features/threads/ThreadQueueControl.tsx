@@ -1,5 +1,6 @@
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
+import { deriveQueuedRunsSquashDraft } from "@t3tools/client-runtime/state/thread-workflows";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
@@ -168,15 +169,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const squashAll = () => {
     const first = queuedRuns[0];
     if (busyRef.current || !first || queuedRuns.length < 2) return;
-    const records = queuedRuns.flatMap(({ context }) => context?.records ?? []);
+    const draft = deriveQueuedRunsSquashDraft(queuedRuns);
     void Haptics.selectionAsync();
     beginQueuedRunEdit(threadKey, {
       runId: first.run.id,
       messageId: first.messageId,
-      originalText: queuedRuns.map(({ text }) => text).join("\n\n"),
-      existingAttachments: queuedRuns.flatMap(({ attachments }) => attachments),
-      ...(records.length > 0 ? { context: { version: 1, records } } : {}),
-      squashRunIds: queuedRuns.map(({ run }) => run.id),
+      originalText: draft.text,
+      existingAttachments: draft.attachments,
+      ...(draft.context ? { context: draft.context } : {}),
+      squashRunIds: draft.runIds,
     });
     navigation.goBack();
   };

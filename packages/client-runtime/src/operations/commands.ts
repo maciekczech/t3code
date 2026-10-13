@@ -1082,9 +1082,11 @@ export const squashQueuedRuns = Effect.fn("EnvironmentCommands.squashQueuedRuns"
     runIds: input.runIds,
     text: input.text,
     attachments,
-    ...(input.context
-      ? { context: remapComposerContextAttachments(input.context, input.attachments, attachments) }
-      : {}),
+    // The squash replaces every message, so no context means none: left out, the server would
+    // merge the originals' context back in.
+    context: input.context
+      ? remapComposerContextAttachments(input.context, input.attachments, attachments)
+      : { version: 1, records: [] },
   });
 });
 

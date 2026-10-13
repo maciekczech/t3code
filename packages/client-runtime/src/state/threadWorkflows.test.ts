@@ -4,6 +4,7 @@ import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import {
   canDetachThreadProviderSession,
   canForkProjectedAssistantItem,
+  deriveQueuedRunsSquashDraft,
   deriveThreadQueueWorkflowState,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
@@ -364,6 +365,24 @@ describe("thread workflows", () => {
       false,
     );
     expect(canDetachThreadProviderSession(projection)).toBe(true);
+  });
+
+  it("drafts a squash from every queued message, carrying a shared context once", () => {
+    const skill = { version: 1, contextId: "ctx_skill", kind: "skill", label: "$x", name: "x" };
+    const queued = (id: string) => ({
+      run: { id },
+      text: id,
+      attachments: [{ id: `attachment-${id}` }],
+      messageId: `message-${id}`,
+      context: { version: 1, records: [skill] },
+    });
+
+    expect(deriveQueuedRunsSquashDraft([queued("one"), queued("two")] as never)).toEqual({
+      runIds: ["one", "two"],
+      text: "one\n\ntwo",
+      attachments: [{ id: "attachment-one" }, { id: "attachment-two" }],
+      context: { version: 1, records: [skill] },
+    });
   });
 
   it("offers squash only when the queued messages share a model", () => {

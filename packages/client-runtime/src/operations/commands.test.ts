@@ -729,6 +729,8 @@ describe("V2 environment commands", () => {
             runIds: ["run-3", "run-4"],
             text: "one merged message",
             attachments: [],
+            // No context left after editing must not fall back to the originals' context.
+            context: { version: 1, records: [] },
           },
         ]);
         // A text-only edit must not send an attachments replacement list.
