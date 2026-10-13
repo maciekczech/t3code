@@ -27,6 +27,8 @@ export interface QueuedThreadRun {
   /** Editing replaces this message's content, so its id and context travel with the row. */
   readonly messageId: Message["id"];
   readonly context?: Message["context"];
+  /** Unsquash can give back the messages this one replaced. */
+  readonly isSquashed: boolean;
 }
 
 export interface ThreadQueueWorkflowState {
@@ -168,6 +170,7 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
       attachments: message?.attachments ?? [],
       messageId: run.userMessageId,
       ...(message?.context ? { context: message.context } : {}),
+      isSquashed: message?.squashedFrom !== undefined,
     };
   });
 

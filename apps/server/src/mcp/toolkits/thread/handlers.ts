@@ -36,6 +36,7 @@ function queueEntry(
     queuedRunId: run.id,
     text: characters.slice(0, limit).join(""),
     truncated: characters.length > limit,
+    isSquashed: message.squashedFrom !== undefined,
   };
 }
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
@@ -265,6 +266,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       type: "queued-run.edit",
       runId: input.queuedRunId,
       text: input.text,
+    })),
+  ),
+  t3_queue_unsquash: writesThread((input) =>
+    dispatch(input.threadId, (common) => ({
+      ...common,
+      type: "queued-run.unsquash",
+      runId: input.queuedRunId,
     })),
   ),
   t3_queue_cancel: writesThread((input) =>

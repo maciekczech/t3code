@@ -44,7 +44,7 @@ const REMOVE_ACTION_WIDTH = 76;
 const THUMBNAIL_LIMIT = 3;
 
 type QueueTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
-type QueueAction = "steer" | "edit" | "up" | "down" | "remove";
+type QueueAction = "steer" | "edit" | "unsquash" | "up" | "down" | "remove";
 type QueueRowLayout = { readonly id: RunId; readonly y?: number; readonly height?: number };
 
 export function useThreadQueueWorkflow(target: QueueTarget) {
@@ -67,6 +67,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun, "reorder queued message");
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun, "promote queued message");
   const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun, "remove queued message");
+  const unsquash = useAtomCommand(threadEnvironment.unsquashQueuedRun, "unsquash queued message");
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue, "resume queue");
   const [resuming, setResuming] = useState(false);
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
@@ -146,13 +147,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       navigation.goBack();
       return;
     }
-    if (action !== "steer" && action !== "remove") return;
+    if (action !== "steer" && action !== "remove" && action !== "unsquash") return;
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
     try {
       if (action === "remove") {
         await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
+      } else if (action === "unsquash") {
+        await unsquash({ ...target, input: { threadId: target.threadId, runId } });
       } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
         await promote({
           ...target,
@@ -246,7 +249,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           No messages waiting in this queue.
         </Text>
       ) : null}
-      {queuedRuns.map(({ run, text, attachments }, index) => {
+      {queuedRuns.map(({ run, text, attachments, isSquashed }, index) => {
         const layout = dragRows?.find((row) => row.id === run.id);
         const offset =
           sourceLayout?.y !== undefined &&
@@ -380,6 +383,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       attributes: { disabled: !controls.canEdit },
                       image: Platform.OS === "ios" ? "pencil" : "edit",
                     },
+                    ...(!isSquashed
+                      ? []
+                      : [
+                          {
+                            id: "unsquash",
+                            title: "Unsquash",
+                            attributes: { disabled: !controls.canEdit },
+                          },
+                        ]),
                     { id: "up", title: "Move up", attributes: { disabled: !controls.canMoveUp } },
                     {
                       id: "down",

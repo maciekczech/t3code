@@ -218,6 +218,10 @@ joined in queue order, so you can edit the result first. Saving leaves one queue
 you can steer, edit or reorder like any other. **Cancel** leaves the queue unchanged. On mobile,
 **Squash** is in the queue sheet. It is offered when the queued messages use the same model.
 
+**Unsquash** on a squashed message puts the original messages back in the queue, in their
+original order. Edits made to the squashed message are dropped. On mobile it is in the message's
+long-press menu.
+
 ## Commands and skills
 
 Type `/` for commands or `$` to add a skill from the selected environment and

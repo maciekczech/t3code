@@ -45,6 +45,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
+  type OrchestrationV2SquashedFrom,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadShellSnapshot,
@@ -136,6 +137,16 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+
+function withoutSquashState(message: OrchestrationV2ConversationMessage) {
+  const { context: _context, squashedFrom: _squashedFrom, ...rest } = message;
+  return rest;
+}
+
+function withoutContext<T extends { readonly context?: unknown }>(item: T) {
+  const { context: _context, ...rest } = item;
+  return rest;
+}
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -478,6 +489,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.cancel":
     case "queued-run.edit":
     case "queued-runs.squash":
+    case "queued-run.unsquash":
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -7892,9 +7904,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  /**
+   * `squashedFrom` is set by squash, which replaces the whole message: its context becomes the
+   * command's (absent = none) and it remembers what it replaced.
+   */
   const dispatchQueuedRunEdit = (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    squashedFrom?: OrchestrationV2SquashedFrom,
   ) =>
     Effect.gen(function* () {
       if (command.text.trim().length === 0) {
@@ -7957,10 +7974,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
         payload: {
-          ...queuedMessage,
+          ...(squashedFrom === undefined ? queuedMessage : withoutSquashState(queuedMessage)),
           text: command.text,
           ...editedAttachments,
           ...(command.context ? { context: command.context } : {}),
+          ...(squashedFrom ? { squashedFrom } : {}),
           updatedAt: now,
         },
       });
@@ -7973,7 +7991,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerInstanceId: queuedRun.providerInstanceId,
           occurredAt: now,
           payload: {
-            ...queuedTurnItem,
+            ...(squashedFrom === undefined ? queuedTurnItem : withoutContext(queuedTurnItem)),
             text: command.text,
             ...editedAttachments,
             ...(command.context ? { context: command.context } : {}),
@@ -8068,6 +8086,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       for (const { run } of absorbed) {
         yield* emitQueuedRunCancellation({ command, events, projection, run, now });
       }
+      // Squashing an already squashed message keeps its first original, so one
+      // unsquash always returns every message as it was written.
+      const original = kept.message.squashedFrom ?? kept.message;
       yield* dispatchQueuedRunEdit(
         {
           type: "queued-run.edit",
@@ -8079,7 +8100,145 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(context ? { context } : {}),
         },
         events,
+        {
+          text: original.text,
+          attachments: original.attachments,
+          ...(original.context ? { context: original.context } : {}),
+          absorbedRunIds: [
+            ...(kept.message.squashedFrom?.absorbedRunIds ?? []),
+            ...absorbed.map(({ run }) => run.id),
+          ],
+        },
       );
+    });
+
+  const dispatchQueuedRunUnsquash = (
+    command: Extract<OrchestrationV2Command, { readonly type: "queued-run.unsquash" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const reject = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      const projection = yield* projectionStore
+        .getThreadRecords(
+          command.threadId,
+          ["runs", "messages", "nodes", "attempts", "turnItems"],
+          { turnItemTypes: ["user_message"], messageRoles: ["user"] },
+        )
+        .pipe(
+          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+        );
+      const kept = projection.runs.find((candidate) => candidate.id === command.runId);
+      if (kept === undefined || kept.status !== "queued") {
+        return yield* reject(`Run ${command.runId} is not queued.`);
+      }
+      const messageOf = (run: OrchestrationV2Run) =>
+        projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      if (messageOf(kept)?.squashedFrom === undefined) {
+        return yield* reject(`Run ${command.runId} is not a squashed message.`);
+      }
+      // An absorbed message may be a squash itself, so the kept run expands into every
+      // original run, each squash unfolding where its message sat.
+      const originals: Array<OrchestrationV2Run> = [];
+      const pending = [kept];
+      const seen = new Set<OrchestrationV2Run["id"]>();
+      for (let run = pending.shift(); run !== undefined; run = pending.shift()) {
+        originals.push(run);
+        const absorbed: Array<OrchestrationV2Run> = [];
+        for (const runId of messageOf(run)?.squashedFrom?.absorbedRunIds ?? []) {
+          const absorbedRun = projection.runs.find((candidate) => candidate.id === runId);
+          if (absorbedRun === undefined || absorbedRun.status !== "cancelled" || seen.has(runId)) {
+            return yield* reject(`Squashed run ${runId} can no longer be restored.`);
+          }
+          seen.add(runId);
+          absorbed.push(absorbedRun);
+        }
+        pending.unshift(...absorbed);
+      }
+
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const queuedOrder = queuedRunsInDeliveryOrder(projection).flatMap((run) =>
+        run.id === kept.id ? originals : [run],
+      );
+      for (const run of originals) {
+        const scope = {
+          threadId: command.threadId,
+          runId: run.id,
+          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+        };
+        const message = messageOf(run);
+        if (message?.squashedFrom !== undefined) {
+          const { absorbedRunIds: _absorbedRunIds, ...original } = message.squashedFrom;
+          yield* emitEvent({
+            ...scope,
+            type: "message.updated",
+            payload: { ...withoutSquashState(message), ...original, updatedAt: now },
+          });
+          const turnItem = projection.turnItems.find(
+            (candidate) => candidate.type === "user_message" && candidate.messageId === message.id,
+          );
+          if (turnItem !== undefined && turnItem.type === "user_message") {
+            yield* emitEvent({
+              ...scope,
+              type: "turn-item.updated",
+              payload: { ...withoutContext(turnItem), ...original, updatedAt: now },
+            });
+          }
+        }
+        if (run.id === kept.id) continue;
+        // Reverses dispatchQueuedRunCancel.
+        const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === run.activeAttemptId,
+        );
+        if (attempt !== undefined && rootNode !== undefined) {
+          yield* emitEvent({
+            ...scope,
+            type: "run-attempt.updated",
+            nodeId: rootNode.id,
+            payload: { ...attempt, status: "pending", completedAt: null },
+          });
+        }
+        if (rootNode !== undefined) {
+          yield* emitEvent({
+            ...scope,
+            type: "node.updated",
+            nodeId: rootNode.id,
+            payload: { ...rootNode, status: "pending", completedAt: null },
+          });
+        }
+      }
+      // The restored runs rejoin the queue right after the message that absorbed them.
+      yield* Effect.forEach(queuedOrder, (run, index) => {
+        const queuePosition = index + 1;
+        if (run.status === "queued" && run.queuePosition === queuePosition) return Effect.void;
+        const { queueHeld: _queueHeld, ...restored } = run;
+        return emitEvent({
+          type: "run.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload:
+            run.status === "queued"
+              ? { ...run, queuePosition }
+              : {
+                  ...restored,
+                  status: "queued",
+                  ...(kept.queueHeld === true ? { queueHeld: true } : {}),
+                  queuePosition,
+                  completedAt: null,
+                },
+        });
+      });
     });
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
@@ -11005,6 +11164,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "queued-runs.squash":
         yield* dispatchQueuedRunsSquash(command, events);
         break;
+      case "queued-run.unsquash":
+        yield* dispatchQueuedRunUnsquash(command, events);
+        break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);
         break;
@@ -11164,7 +11326,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ),
             );
           if (
-            (command.type === "queued-run.edit" || command.type === "queued-runs.squash") &&
+            (command.type === "queued-run.edit" ||
+              command.type === "queued-runs.squash" ||
+              command.type === "queued-run.unsquash") &&
             receipt.status === "rejected" &&
             cause._tag === "OrchestratorDispatchError"
           ) {
