@@ -3783,12 +3783,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchSteerIntoRun = (input: {
     readonly command: Extract<
       OrchestrationV2Command,
-      {
-        readonly type:
-          | "message.dispatch"
-          | "queued-message.promote-to-steer"
-          | "queued-runs.squash";
-      }
+      { readonly type: "message.dispatch" | "queued-message.promote-to-steer" }
     >;
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
     readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
@@ -4005,7 +4000,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             type: "user_message",
             messageId: input.messageId,
             inputIntent:
-              input.command.type === "message.dispatch" ? "steer" : "promoted_queued_to_steer",
+              input.command.type === "queued-message.promote-to-steer"
+                ? "promoted_queued_to_steer"
+                : "steer",
             text: input.text,
             attachments: input.attachments,
             ...(input.context ? { context: input.context } : {}),
@@ -7988,7 +7985,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchQueuedRunsSquash = (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-runs.squash" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) =>
     Effect.gen(function* () {
       const reject = (cause: string) =>
@@ -8001,22 +7997,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject("Squashing needs at least two different queued messages.");
       }
       const projection = yield* projectionStore
-        .getThreadRecords(
-          command.threadId,
-          [
-            "runs",
-            "nodes",
-            "attempts",
-            "messages",
-            "providerThreads",
-            "providerTurns",
-            "providerSessions",
-            "turnItems",
-            "runtimeRequests",
-            "subagents",
-          ],
-          { turnItemTypes: [], messageRoles: ["user"] },
-        )
+        .getThreadRecords(command.threadId, ["runs", "messages"], {
+          messageRoles: ["user"],
+        })
         .pipe(
           Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
         );
@@ -8067,54 +8050,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject("These queued messages carry too many attachments to squash.");
       }
 
-      const cancelRun = (runId: OrchestrationV2Run["id"]) =>
-        dispatchQueuedRunCancel(
+      for (const { run } of absorbed) {
+        yield* dispatchQueuedRunCancel(
           {
             type: "queued-run.cancel",
             commandId: command.commandId,
             threadId: command.threadId,
-            runId,
-          },
-          events,
-        );
-      for (const { run } of absorbed) yield* cancelRun(run.id);
-
-      if (command.targetRunId === undefined) {
-        return yield* dispatchQueuedRunEdit(
-          {
-            type: "queued-run.edit",
-            commandId: command.commandId,
-            threadId: command.threadId,
-            runId: kept.run.id,
-            text,
-            attachments,
-            ...(context ? { context } : {}),
+            runId: run.id,
           },
           events,
         );
       }
-      yield* cancelRun(kept.run.id);
-      yield* dispatchSteerIntoRun({
-        command,
+      yield* dispatchQueuedRunEdit(
+        {
+          type: "queued-run.edit",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          runId: kept.run.id,
+          text,
+          attachments,
+          ...(context ? { context } : {}),
+        },
         events,
-        effects,
-        projection,
-        modelSelection: projection.thread.modelSelection,
-        targetRunId: command.targetRunId,
-        messageId: kept.message.id,
-        text,
-        attachments,
-        ...(context ? { context } : {}),
-        createdBy: kept.message.createdBy,
-        creationSource: kept.message.creationSource,
-        ...(kept.message.scheduledTaskId === undefined
-          ? {}
-          : { scheduledTaskId: kept.message.scheduledTaskId }),
-        ...(kept.message.senderThreadId === undefined
-          ? {}
-          : { senderThreadId: kept.message.senderThreadId }),
-        forceRestart: false,
-      });
+      );
     });
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
@@ -11038,7 +10996,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchQueuedRunEdit(command, events);
         break;
       case "queued-runs.squash":
-        yield* dispatchQueuedRunsSquash(command, events, effects);
+        yield* dispatchQueuedRunsSquash(command, events);
         break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);

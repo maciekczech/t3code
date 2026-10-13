@@ -3057,8 +3057,7 @@ export const OrchestrationV2Command = Schema.Union([
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
   }),
   /**
-   * Merges queued messages into the first listed run and cancels the rest. With a
-   * target run the merged message is delivered as one steer instead of staying queued.
+   * Merges queued messages into the first listed run, which stays queued, and cancels the rest.
    */
   Schema.Struct({
     type: Schema.Literal("queued-runs.squash"),
@@ -3069,7 +3068,6 @@ export const OrchestrationV2Command = Schema.Union([
     text: Schema.optional(Schema.String),
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     context: Schema.optional(OrchestrationMessageContext),
-    targetRunId: Schema.optional(RunId),
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),

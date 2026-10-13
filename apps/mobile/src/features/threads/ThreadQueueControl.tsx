@@ -228,9 +228,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       {queuedRuns.length > 1 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">
-            {workflow?.canPromoteToSteer
-              ? "Combine every message into one, edit it, and send it as a single steer."
-              : "Combine every message into one queued message and edit it."}
+            Combine every message into one queued message and edit it.
           </Text>
           <MaterialButton
             label={`Squash ${queuedRuns.length} messages`}

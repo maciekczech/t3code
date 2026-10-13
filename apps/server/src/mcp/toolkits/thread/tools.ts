@@ -129,12 +129,11 @@ const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
 const QueueSquashTool = Tool.make("t3_queue_squash", {
   ...commandTool,
   description:
-    "Merge two or more queued messages into the first listed one and cancel the rest. Text and attachments join in the listed order unless text is given. With targetRunId the merged message is delivered as one steer to that active run.",
+    "Merge two or more queued messages into the first listed one and cancel the rest. Text and attachments join in the listed order unless text is given. The merged message stays queued.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     queuedRunIds: Schema.Array(RunId),
     text: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
-    targetRunId: Schema.optional(RunId),
   }),
 }).annotate(Tool.Destructive, true);
 

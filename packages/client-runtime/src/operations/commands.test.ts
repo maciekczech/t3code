@@ -705,7 +705,6 @@ describe("V2 environment commands", () => {
           messageId: MessageId.make("message-3"),
           text: "one merged message",
           attachments: [],
-          targetRunId: RunId.make("run-active"),
         }).pipe(provide);
 
         expect(commands).toMatchObject([
@@ -730,7 +729,6 @@ describe("V2 environment commands", () => {
             runIds: ["run-3", "run-4"],
             text: "one merged message",
             attachments: [],
-            targetRunId: "run-active",
           },
         ]);
         // A text-only edit must not send an attachments replacement list.

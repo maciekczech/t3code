@@ -296,7 +296,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       type: "queued-runs.squash",
       runIds: input.queuedRunIds,
       ...(input.text === undefined ? {} : { text: input.text }),
-      ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
     })),
   ),
   t3_thread_organize: writesThread((input) =>

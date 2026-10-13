@@ -12,9 +12,9 @@ import type {
 import {
   Clock3Icon,
   CornerUpRightIcon,
+  FoldVerticalIcon,
   GripVerticalIcon,
   ListOrderedIcon,
-  MergeIcon,
   PencilIcon,
 } from "lucide-react";
 import { useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
@@ -317,14 +317,12 @@ export function QueuedRunsControl({
                     disabled={busyRunId !== null}
                     onClick={squashAll}
                   >
-                    <MergeIcon />
+                    <FoldVerticalIcon />
                     Squash
                   </Button>
                 </TooltipTrigger>
                 <TooltipPopup>
-                  {workflow?.canPromoteToSteer
-                    ? `Combine all ${queued.length} into one message, edit it, and send it as a single steer`
-                    : `Combine all ${queued.length} into one queued message and edit it`}
+                  {`Combine all ${queued.length} into one queued message and edit it`}
                 </TooltipPopup>
               </Tooltip>
             ) : null}

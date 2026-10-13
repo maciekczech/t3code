@@ -214,9 +214,9 @@ message starts or is removed while you are editing, the edit ends: changed conte
 composer when it is empty, and is discarded otherwise.
 
 With two or more queued messages, **Squash** combines them into one. They open in the composer
-joined in queue order, so you can edit the result first. Sending delivers it as a single steer
-while the agent is working; otherwise it stays as one queued message. **Cancel** leaves the queue
-unchanged. On mobile, **Squash** is in the queue sheet.
+joined in queue order, so you can edit the result first. Saving leaves one queued message, which
+you can steer, edit or reorder like any other. **Cancel** leaves the queue unchanged. On mobile,
+**Squash** is in the queue sheet.
 
 ## Commands and skills
 

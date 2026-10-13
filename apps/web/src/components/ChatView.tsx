@@ -107,10 +107,7 @@ import {
   presentPendingBackgroundWork,
   presentProviderGoal,
 } from "@t3tools/client-runtime/state/thread-execution";
-import {
-  deriveThreadQueueWorkflowState,
-  threadSupportsProviderHandoff,
-} from "@t3tools/client-runtime/state/thread-workflows";
+import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
@@ -2147,13 +2144,6 @@ export default function ChatView(props: ChatViewProps) {
     isServerThread &&
     serverProjection?.runs.some((run) => run.status === "queued" && run.queueHeld === true) ===
       true;
-  // A squash goes out as one steer while the running turn can take one; otherwise the
-  // merged message stays queued.
-  const queuedSquashSteerRunId = useMemo(() => {
-    if (!editingQueuedRun?.squashRunIds || serverProjection === null) return null;
-    const workflow = deriveThreadQueueWorkflowState(serverProjection);
-    return workflow.canPromoteToSteer ? (workflow.activeRun?.id ?? null) : null;
-  }, [editingQueuedRun?.squashRunIds, serverProjection]);
   const resumableRunId = useMemo(() => {
     if (!isServerThread || serverProjection === null) return null;
     const run = latestExecutedRun(serverProjection.runs);
@@ -9110,9 +9100,6 @@ export default function ChatView(props: ChatViewProps) {
                   runIds: editingQueuedRun.squashRunIds,
                   text,
                   ...edit,
-                  ...(queuedSquashSteerRunId === null
-                    ? {}
-                    : { targetRunId: queuedSquashSteerRunId }),
                 },
               });
         if (result._tag === "Failure") {
@@ -11942,9 +11929,7 @@ export default function ChatView(props: ChatViewProps) {
                               editingQueuedAttachments={composerEditingQueuedAttachments}
                               editingQueuedSubmitLabel={
                                 editingQueuedRun?.squashRunIds
-                                  ? queuedSquashSteerRunId === null
-                                    ? "Squash into one queued message"
-                                    : "Squash and steer"
+                                  ? "Squash into one queued message"
                                   : undefined
                               }
                               onRemoveEditingQueuedAttachment={removeEditingQueuedAttachment}

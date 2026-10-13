@@ -532,9 +532,6 @@ export function useThreadComposerState() {
         attachments: payload.attachments,
         ...(payload.context ? { context: payload.context } : {}),
       };
-      // A squash goes out as one steer while the running turn can take one;
-      // otherwise the merged message stays queued.
-      const steerRunId = queueWorkflow?.canPromoteToSteer ? queueWorkflow.activeRun?.id : undefined;
       const result =
         edit.squashRunIds === undefined
           ? await editQueuedRun({
@@ -548,7 +545,6 @@ export function useThreadComposerState() {
                 runIds: edit.squashRunIds,
                 text,
                 ...editInput,
-                ...(steerRunId === undefined ? {} : { targetRunId: steerRunId }),
               },
             });
       if (result._tag !== "Success") {
@@ -566,7 +562,6 @@ export function useThreadComposerState() {
     }
   }, [
     editQueuedRun,
-    queueWorkflow,
     selectedEnvironmentRuntime?.serverConfig,
     selectedThreadShell,
     squashQueuedRuns,

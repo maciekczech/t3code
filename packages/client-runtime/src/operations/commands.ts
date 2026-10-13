@@ -253,8 +253,6 @@ export interface SquashQueuedRunsInput extends ThreadCommandInput {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext;
-  /** The running run to steer with the merged message. Omitted = it stays queued. */
-  readonly targetRunId?: RunId;
 }
 
 export interface EditQueuedRunInput extends ThreadCommandInput {
@@ -1087,7 +1085,6 @@ export const squashQueuedRuns = Effect.fn("EnvironmentCommands.squashQueuedRuns"
     ...(input.context
       ? { context: remapComposerContextAttachments(input.context, input.attachments, attachments) }
       : {}),
-    ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
   });
 });
 
