@@ -8135,17 +8135,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject(`Run ${command.runId} is not a squashed message.`);
       }
       // An absorbed message may be a squash itself, so the kept run expands into every
-      // original run in the order the messages were written.
+      // original run, each squash unfolding where its message sat.
       const originals: Array<OrchestrationV2Run> = [];
       const pending = [kept];
+      const seen = new Set<OrchestrationV2Run["id"]>();
       for (let run = pending.shift(); run !== undefined; run = pending.shift()) {
         originals.push(run);
         const absorbed: Array<OrchestrationV2Run> = [];
         for (const runId of messageOf(run)?.squashedFrom?.absorbedRunIds ?? []) {
           const absorbedRun = projection.runs.find((candidate) => candidate.id === runId);
-          if (absorbedRun === undefined || absorbedRun.status !== "cancelled") {
+          if (absorbedRun === undefined || absorbedRun.status !== "cancelled" || seen.has(runId)) {
             return yield* reject(`Squashed run ${runId} can no longer be restored.`);
           }
+          seen.add(runId);
           absorbed.push(absorbedRun);
         }
         pending.unshift(...absorbed);
