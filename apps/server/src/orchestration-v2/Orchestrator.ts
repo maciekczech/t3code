@@ -8025,6 +8025,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const [kept, ...absorbed] = queued;
       if (kept === undefined) return;
+      // The merged message runs on the kept run's model, so a different one would be dropped silently.
+      if (
+        absorbed.some(
+          ({ run }) => !modelSelectionsEqual(run.modelSelection, kept.run.modelSelection),
+        )
+      ) {
+        return yield* reject("Queued messages on different models cannot be squashed.");
+      }
 
       const text = command.text ?? queued.map(({ message }) => message.text).join("\n\n");
       const attachments =

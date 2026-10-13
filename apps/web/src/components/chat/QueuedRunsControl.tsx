@@ -98,6 +98,7 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
+  const canSquash = workflow?.canSquash === true;
   const queuedImageAttachmentIds = useMemo(() => {
     const ids: string[] = [];
     for (const { attachments } of workflow?.queuedRuns ?? []) {
@@ -314,7 +315,7 @@ export function QueuedRunsControl({
             )}
           </ComposerBanner.Content>
           <ComposerBanner.Actions>
-            {!squashing && queued.length > 1 && props.editingRunId === null ? (
+            {!squashing && canSquash && props.editingRunId === null ? (
               <Tooltip>
                 <TooltipTrigger render={<span className="relative flex shrink-0" />}>
                   <Button

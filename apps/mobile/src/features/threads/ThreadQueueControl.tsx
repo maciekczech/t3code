@@ -225,7 +225,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
-      {queuedRuns.length > 1 ? (
+      {workflow?.canSquash === true ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">
             Combine every message into one queued message and edit it.

@@ -4417,6 +4417,32 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(staleError._tag, "OrchestratorCommandRejectedError");
       const afterStale = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(afterStale.runs.find((run) => run.id === second.id)?.status, "queued");
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-queued-squash-other-model"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-queued-squash-other-model"),
+        text: "On another model",
+        attachments: [],
+        modelSelection: { ...modelSelection, model: "gpt-5.5" },
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const otherModel = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === "runtime-layer-queued-squash-other-model",
+      );
+      assert.isDefined(otherModel);
+      const mixedModelError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-mixed-model"),
+          threadId,
+          runIds: [second.id, otherModel.id],
+        })
+        .pipe(Effect.flip);
+      assert.equal(mixedModelError._tag, "OrchestratorCommandRejectedError");
     }),
   );
 
