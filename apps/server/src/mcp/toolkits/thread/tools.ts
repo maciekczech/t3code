@@ -126,6 +126,16 @@ const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
     "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply.",
   parameters: Schema.Struct({ ...queueTarget, targetRunId: RunId }),
 }).annotate(Tool.Destructive, true);
+const QueueSquashTool = Tool.make("t3_queue_squash", {
+  ...commandTool,
+  description:
+    "Merge two or more queued messages into the first listed one and cancel the rest. Text and attachments join in the listed order unless text is given. The merged message stays queued.",
+  parameters: Schema.Struct({
+    threadId: Schema.optional(ThreadId),
+    queuedRunIds: Schema.Array(RunId),
+    text: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
+  }),
+}).annotate(Tool.Destructive, true);
 
 const requestTarget = { threadId: Schema.optional(ThreadId), requestId: RuntimeRequestId };
 const question = Schema.Struct({
@@ -289,4 +299,5 @@ export const ThreadToolkit = Toolkit.make(
   QueueCancelTool,
   QueueReorderTool,
   QueuePromoteTool,
+  QueueSquashTool,
 );

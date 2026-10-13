@@ -246,6 +246,15 @@ export interface RetryWorkspacePreparationInput extends ThreadCommandInput {
   readonly runId: RunId;
 }
 
+export interface SquashQueuedRunsInput extends ThreadCommandInput {
+  /** Queue order. The first run keeps the merged message, whose id is `messageId`. */
+  readonly runIds: ReadonlyArray<RunId>;
+  readonly messageId: MessageId;
+  readonly text: string;
+  readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
+  readonly context?: import("@t3tools/contracts").OrchestrationMessageContext;
+}
+
 export interface EditQueuedRunInput extends ThreadCommandInput {
   readonly runId: RunId;
   readonly text: string;
@@ -1059,6 +1068,25 @@ export const editQueuedRun = Effect.fn("EnvironmentCommands.editQueuedRun")(func
           ),
         }
       : {}),
+  });
+});
+
+export const squashQueuedRuns = Effect.fn("EnvironmentCommands.squashQueuedRuns")(function* (
+  input: SquashQueuedRunsInput,
+) {
+  const attachments = yield* persistAttachments(input.threadId, input.messageId, input.attachments);
+  return yield* dispatch({
+    type: "queued-runs.squash",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    runIds: input.runIds,
+    text: input.text,
+    attachments,
+    // The squash replaces every message, so no context means none: left out, the server would
+    // merge the originals' context back in.
+    context: input.context
+      ? remapComposerContextAttachments(input.context, input.attachments, attachments)
+      : { version: 1, records: [] },
   });
 });
 

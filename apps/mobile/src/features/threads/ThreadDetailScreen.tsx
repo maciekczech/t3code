@@ -1283,6 +1283,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       exiting={FadeOut.duration(120)}
                     >
                       <ComposerQueuedEditBanner
+                        squashCount={props.queuedRunEdit.squashRunIds?.length}
                         saving={props.isSavingQueuedEdit}
                         onCancel={() => {
                           voiceInputSession.cancel(props.composerDraftKey);

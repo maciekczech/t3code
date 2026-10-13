@@ -51,6 +51,7 @@ import {
   reorderQueuedRun,
   revertThreadCheckpoint,
   settleThread,
+  squashQueuedRuns,
   startThreadTurn,
   unsettleThread,
   updateProject,
@@ -697,6 +698,14 @@ describe("V2 environment commands", () => {
             ],
           },
         }).pipe(provide);
+        yield* squashQueuedRuns({
+          commandId: CommandId.make("squash"),
+          threadId: v2ThreadId,
+          runIds: [RunId.make("run-3"), RunId.make("run-4")],
+          messageId: MessageId.make("message-3"),
+          text: "one merged message",
+          attachments: [],
+        }).pipe(provide);
 
         expect(commands).toMatchObject([
           { type: "thread.fork", sourcePoint: { type: "run", runId: "run-1" } },
@@ -714,6 +723,14 @@ describe("V2 environment commands", () => {
             runId: "run-3",
             text: "updated queued text with attachments",
             attachments: [{ id: "attachment-kept" }],
+          },
+          {
+            type: "queued-runs.squash",
+            runIds: ["run-3", "run-4"],
+            text: "one merged message",
+            attachments: [],
+            // No context left after editing must not fall back to the originals' context.
+            context: { version: 1, records: [] },
           },
         ]);
         // A text-only edit must not send an attachments replacement list.

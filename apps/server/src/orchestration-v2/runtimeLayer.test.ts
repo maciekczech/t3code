@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
+  ComposerContextId,
   type ApplicationStoredEvent,
   CheckpointId,
   CheckpointRef,
@@ -4285,6 +4286,178 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         );
         assert.equal(resumed.runs.length, 3, "resume retries must not duplicate messages or runs");
       }),
+  );
+
+  it.effect("squashes queued runs into one message", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-queued-squash-thread");
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-queued-squash-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-queued-squash-project"),
+        title: "Squash queued work",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-queued-squash",
+      });
+      for (const [index, text] of ["Active", "First", "Second", "Third"].entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-queued-squash-message-${index}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-queued-squash-message-${index}`),
+          text,
+          attachments:
+            index === 0
+              ? []
+              : [
+                  {
+                    type: "image",
+                    id: `runtime-layer-queued-squash-attachment-${index}`,
+                    name: "screenshot.png",
+                    mimeType: "image/png",
+                    sizeBytes: 128,
+                  },
+                ],
+          // Both squashed messages reference the same skill under one context id.
+          ...(index === 0 || index === 3
+            ? {}
+            : {
+                context: {
+                  version: 1 as const,
+                  records: [
+                    {
+                      version: 1 as const,
+                      contextId: ComposerContextId.make("ctx_skill"),
+                      kind: "skill" as const,
+                      label: "$pinchtab",
+                      name: "pinchtab",
+                    },
+                  ],
+                },
+              }),
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      }
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const [first, second, third] = before.runs.filter((run) => run.status === "queued");
+      assert.isDefined(first);
+      assert.isDefined(second);
+      assert.isDefined(third);
+
+      const singleRunError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-single"),
+          threadId,
+          runIds: [first.id],
+        })
+        .pipe(Effect.flip);
+      assert.equal(singleRunError._tag, "OrchestratorCommandRejectedError");
+
+      const tooLongError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-too-long"),
+          threadId,
+          runIds: [first.id, second.id],
+          text: "x".repeat(120_001),
+        })
+        .pipe(Effect.flip);
+      assert.equal(tooLongError._tag, "OrchestratorCommandRejectedError");
+
+      // The listed order decides the merged text, not the queue order.
+      yield* orchestrator.dispatch({
+        type: "queued-runs.squash",
+        commandId: CommandId.make("runtime-layer-queued-squash-default"),
+        threadId,
+        runIds: [second.id, first.id],
+      });
+      const merged = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        merged.runs.filter((run) => run.status === "queued").map((run) => run.id),
+        [second.id, third.id],
+      );
+      assert.equal(merged.runs.find((run) => run.id === first.id)?.status, "cancelled");
+      const mergedMessage = merged.messages.find((message) => message.id === second.userMessageId);
+      assert.equal(mergedMessage?.text, "Second\n\nFirst");
+      assert.deepEqual(
+        mergedMessage?.attachments.map((attachment) => attachment.id),
+        ["runtime-layer-queued-squash-attachment-2", "runtime-layer-queued-squash-attachment-1"],
+      );
+      assert.deepEqual(
+        mergedMessage?.context?.records.map((record) => record.contextId),
+        ["ctx_skill"],
+      );
+
+      yield* orchestrator.dispatch({
+        type: "queued-runs.squash",
+        commandId: CommandId.make("runtime-layer-queued-squash-edited"),
+        threadId,
+        runIds: [second.id, third.id],
+        text: "One edited message",
+        attachments: [],
+        // An emptied context is not replaced by the originals' context.
+        context: { version: 1, records: [] },
+      });
+      const edited = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        edited.runs.filter((run) => run.status === "queued").map((run) => run.id),
+        [second.id],
+      );
+      const editedMessage = edited.messages.find((message) => message.id === second.userMessageId);
+      assert.equal(editedMessage?.text, "One edited message");
+      assert.deepEqual(editedMessage?.attachments, []);
+      assert.deepEqual(editedMessage?.context?.records ?? [], []);
+
+      const staleError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-stale"),
+          threadId,
+          runIds: [second.id, third.id],
+        })
+        .pipe(Effect.flip);
+      assert.equal(staleError._tag, "OrchestratorCommandRejectedError");
+      const afterStale = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterStale.runs.find((run) => run.id === second.id)?.status, "queued");
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-queued-squash-other-model"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-queued-squash-other-model"),
+        text: "On another model",
+        attachments: [],
+        modelSelection: { ...modelSelection, model: "gpt-5.5" },
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const otherModel = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === "runtime-layer-queued-squash-other-model",
+      );
+      assert.isDefined(otherModel);
+      const mixedModelError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-mixed-model"),
+          threadId,
+          runIds: [second.id, otherModel.id],
+        })
+        .pipe(Effect.flip);
+      assert.equal(mixedModelError._tag, "OrchestratorCommandRejectedError");
+    }),
   );
 
   it.effect("edits and removes queued runs", () =>

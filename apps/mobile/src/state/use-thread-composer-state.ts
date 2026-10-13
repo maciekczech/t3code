@@ -201,6 +201,10 @@ export function useThreadComposerState() {
     label: "edit queued message",
     reportFailure: false,
   });
+  const squashQueuedRuns = useAtomCommand(threadEnvironment.squashQueuedRuns, {
+    label: "squash queued messages",
+    reportFailure: false,
+  });
   const [isSavingQueuedEdit, setIsSavingQueuedEdit] = useState(false);
   const savingQueuedEditRef = useRef(false);
   const pastedTextFileNamesRef = useRef<{ threadKey: string | null; names: Set<string> }>({
@@ -439,8 +443,8 @@ export function useThreadComposerState() {
       return;
     }
     if (savingQueuedEditRef.current) return;
-    const stillQueued = selectedThreadRuns.some(
-      (run) => run.id === editedRunId && run.status === "queued",
+    const stillQueued = (getQueuedRunEdit(selectedThreadKey)?.squashRunIds ?? [editedRunId]).every(
+      (runId) => selectedThreadRuns.some((run) => run.id === runId && run.status === "queued"),
     );
     if (stillQueued) return;
     const editDraftKey = queuedEditDraftKey(selectedThreadKey, editedRunId);
@@ -523,19 +527,26 @@ export function useThreadComposerState() {
         draftAttachments: draft.attachments,
         uploaded: prepared.attachments,
       });
-      const result = await editQueuedRun({
-        environmentId: thread.environmentId,
-        input: {
-          threadId: thread.id,
-          runId: edit.runId,
-          text,
-          edit: {
-            messageId: edit.messageId,
-            attachments: payload.attachments,
-            ...(payload.context ? { context: payload.context } : {}),
-          },
-        },
-      });
+      const editInput = {
+        messageId: edit.messageId,
+        attachments: payload.attachments,
+        ...(payload.context ? { context: payload.context } : {}),
+      };
+      const result =
+        edit.squashRunIds === undefined
+          ? await editQueuedRun({
+              environmentId: thread.environmentId,
+              input: { threadId: thread.id, runId: edit.runId, text, edit: editInput },
+            })
+          : await squashQueuedRuns({
+              environmentId: thread.environmentId,
+              input: {
+                threadId: thread.id,
+                runIds: edit.squashRunIds,
+                text,
+                ...editInput,
+              },
+            });
       if (result._tag !== "Success") {
         Alert.alert(
           "Could not save the queued message",
@@ -549,7 +560,12 @@ export function useThreadComposerState() {
       savingQueuedEditRef.current = false;
       setIsSavingQueuedEdit(false);
     }
-  }, [editQueuedRun, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+  }, [
+    editQueuedRun,
+    selectedEnvironmentRuntime?.serverConfig,
+    selectedThreadShell,
+    squashQueuedRuns,
+  ]);
 
   const onSendMessage = useCallback(
     async (followUpOverride?: ActiveTurnComposerAction) => {

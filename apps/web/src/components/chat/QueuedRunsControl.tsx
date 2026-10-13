@@ -1,16 +1,21 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  deriveQueuedRunsSquashDraft,
+  deriveThreadQueueWorkflowState,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import type {
   ChatAttachment as ContractChatAttachment,
   EnvironmentId,
   MessageId,
+  OrchestrationMessageContext,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import {
   Clock3Icon,
   CornerUpRightIcon,
+  FoldVerticalIcon,
   GripVerticalIcon,
   ListOrderedIcon,
   PencilIcon,
@@ -32,6 +37,11 @@ export interface EditQueuedRunRequest {
   readonly messageId: MessageId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ContractChatAttachment>;
+  /** Set when the edit merges these runs, in queue order, into `runId`. */
+  readonly squash?: {
+    readonly runIds: ReadonlyArray<RunId>;
+    readonly context: OrchestrationMessageContext | undefined;
+  };
 }
 
 interface QueuedRowThumbnail {
@@ -61,6 +71,10 @@ export function QueuedRunsControl({
   >;
   /** The saved queue entry stays visible while its draft is edited in the composer. */
   readonly editingRunId: RunId | null;
+  /** Every run being merged while a squash is edited; its first entry is `editingRunId`. */
+  readonly squashingRunIds: ReadonlyArray<RunId> | null;
+  /** The environment's server understands the squash command. */
+  readonly supportsSquash: boolean;
   readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
 }) {
@@ -89,6 +103,7 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
+  const canSquash = props.supportsSquash && workflow?.canSquash === true;
   const queuedImageAttachmentIds = useMemo(() => {
     const ids: string[] = [];
     for (const { attachments } of workflow?.queuedRuns ?? []) {
@@ -231,6 +246,21 @@ export function QueuedRunsControl({
 
   if (items.length === 0) return null;
 
+  const squashing = props.squashingRunIds !== null;
+  const squashAll = () => {
+    const first = queued[0];
+    if (!first || queued.length < 2) return;
+    const draft = deriveQueuedRunsSquashDraft(queued);
+    setExpanded(true);
+    props.onEditQueuedRun({
+      runId: first.run.id,
+      messageId: first.run.userMessageId,
+      text: draft.text,
+      attachments: draft.attachments,
+      squash: { runIds: draft.runIds, context: draft.context },
+    });
+  };
+
   const remove = async (runId: RunId) => {
     setBusyRunId(runId);
     try {
@@ -252,19 +282,59 @@ export function QueuedRunsControl({
         data-chat-composer-collapsed-controls="true"
         className="relative z-0"
       >
-        <ComposerBanner.Row
-          render={<button type="button" />}
-          aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
-          aria-expanded={expanded}
-          aria-controls={queueListId}
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={() => setExpanded((value) => !value)}
-        >
+        <ComposerBanner.Row className="relative">
+          {/* The whole header toggles the list; the squash actions sit above this button. */}
+          <button
+            type="button"
+            aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
+            aria-expanded={expanded}
+            aria-controls={queueListId}
+            className="absolute inset-0 cursor-pointer rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => setExpanded((value) => !value)}
+          />
           <ComposerBanner.Icon>
             <ListOrderedIcon />
           </ComposerBanner.Icon>
-          <ComposerBanner.Content className="text-muted-foreground">Queued</ComposerBanner.Content>
+          <ComposerBanner.Content className="text-muted-foreground">
+            {squashing ? (
+              <>
+                <span className="truncate">Squashing {props.squashingRunIds?.length} messages</span>
+                <ComposerBanner.Separator />
+                <span className="relative flex shrink-0">
+                  <Button
+                    size="micro"
+                    variant="ghost-muted"
+                    aria-label="Cancel squashing queued messages"
+                    onClick={props.onCancelEdit}
+                  >
+                    Cancel
+                  </Button>
+                </span>
+              </>
+            ) : (
+              "Queued"
+            )}
+          </ComposerBanner.Content>
           <ComposerBanner.Actions>
+            {!squashing && canSquash && props.editingRunId === null ? (
+              <Tooltip>
+                <TooltipTrigger render={<span className="relative flex shrink-0" />}>
+                  <Button
+                    size="micro"
+                    variant="ghost-muted"
+                    disabled={busyRunId !== null}
+                    onClick={squashAll}
+                  >
+                    <FoldVerticalIcon />
+                    Squash
+                  </Button>
+                </TooltipTrigger>
+                <TooltipPopup>
+                  {`Combine all ${queued.length} into one queued message and edit it`}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
             <ComposerBanner.Count>{items.length}</ComposerBanner.Count>
             <ComposerBanner.ToggleIcon expanded={expanded} />
           </ComposerBanner.Actions>
@@ -277,7 +347,9 @@ export function QueuedRunsControl({
               ).trim();
               const rowRunId = item.runId;
               const rowServerIndex = item.serverIndex;
-              const isEditing = rowRunId !== null && rowRunId === props.editingRunId;
+              const isEditing =
+                rowRunId !== null &&
+                (props.squashingRunIds?.includes(rowRunId) ?? rowRunId === props.editingRunId);
               const rowDraggable =
                 rowRunId !== null && rowServerIndex !== null && canReorder && busyRunId === null;
               return (
@@ -364,7 +436,11 @@ export function QueuedRunsControl({
                     ) : null}
                   </ComposerBanner.Icon>
                   <ComposerBanner.Content className="text-foreground/80">
-                    {isEditing ? <span className="sr-only">Editing queued message: </span> : null}
+                    {isEditing ? (
+                      <span className="sr-only">
+                        {squashing ? "Squashing queued message: " : "Editing queued message: "}
+                      </span>
+                    ) : null}
                     {item.pending ? (
                       <Clock3Icon
                         aria-label="Saving queued message"
@@ -404,7 +480,7 @@ export function QueuedRunsControl({
                     </Tooltip>
                   </ComposerBanner.Content>
                   <ComposerBanner.Actions>
-                    {isEditing ? (
+                    {squashing ? null : isEditing ? (
                       <Button
                         size="xs"
                         variant="ghost"

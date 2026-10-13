@@ -130,7 +130,8 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   }
   if (
     command.type !== "message.dispatch" &&
-    (command.type !== "queued-run.edit" || command.attachments === undefined)
+    ((command.type !== "queued-run.edit" && command.type !== "queued-runs.squash") ||
+      command.attachments === undefined)
   )
     return yield* threads.dispatch(command);
   const claimed = yield* AttachmentClaims.claimPendingAttachments({

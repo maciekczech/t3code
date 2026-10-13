@@ -1,5 +1,6 @@
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
+import { deriveQueuedRunsSquashDraft } from "@t3tools/client-runtime/state/thread-workflows";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
@@ -23,6 +24,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { useAssetUrl } from "../../state/assets";
+import { useServerConfigs } from "../../state/entities";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
@@ -81,6 +83,8 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const supportsSquash =
+    useServerConfigs().get(target.environmentId)?.environment.capabilities.queuedRunSquash === true;
   const order = queuedRuns.map(({ run }) => run.id).join(",");
 
   useEffect(() => {
@@ -165,6 +169,22 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     }
   };
 
+  const squashAll = () => {
+    const first = queuedRuns[0];
+    if (busyRef.current || !first || queuedRuns.length < 2) return;
+    const draft = deriveQueuedRunsSquashDraft(queuedRuns);
+    void Haptics.selectionAsync();
+    beginQueuedRunEdit(threadKey, {
+      runId: first.run.id,
+      messageId: first.messageId,
+      originalText: draft.text,
+      existingAttachments: draft.attachments,
+      ...(draft.context ? { context: draft.context } : {}),
+      squashRunIds: draft.runIds,
+    });
+    navigation.goBack();
+  };
+
   const canReorder = workflow?.canReorder === true && queuedRuns.length > 1;
   const sourceLayout = dragRows?.find((row) => row.id === draggedRunId);
   const lastLayout = dragRows?.at(-1);
@@ -209,6 +229,18 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
+      {supportsSquash && workflow?.canSquash === true ? (
+        <View className="gap-2 py-3">
+          <Text className="text-sm text-foreground-muted">
+            Combine every message into one queued message and edit it.
+          </Text>
+          <MaterialButton
+            label={`Squash ${queuedRuns.length} messages`}
+            disabled={busyRunId !== null || draggedRunId !== null || editing !== null}
+            onPress={squashAll}
+          />
+        </View>
+      ) : null}
       {queuedRuns.length === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No messages waiting in this queue.
@@ -228,7 +260,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
           canReorder: workflow?.canReorder ?? false,
           index,
-          isEditing: editing?.runId === run.id,
+          isEditing: editing?.squashRunIds?.includes(run.id) ?? editing?.runId === run.id,
           queuedCount: queuedRuns.length,
           text,
         });

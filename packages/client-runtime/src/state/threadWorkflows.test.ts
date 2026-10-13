@@ -4,6 +4,7 @@ import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import {
   canDetachThreadProviderSession,
   canForkProjectedAssistantItem,
+  deriveQueuedRunsSquashDraft,
   deriveThreadQueueWorkflowState,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
@@ -77,13 +78,20 @@ describe("thread workflows", () => {
           activeAttemptId: "attempt-active",
           ordinal: 1,
         },
-        { id: "later", status: "queued", userMessageId: "message-later", ordinal: 3 },
+        {
+          id: "later",
+          status: "queued",
+          userMessageId: "message-later",
+          ordinal: 3,
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        },
         {
           id: "first",
           status: "queued",
           userMessageId: "message-first",
           ordinal: 2,
           queuePosition: 1,
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
         },
       ],
       messages: [
@@ -136,6 +144,7 @@ describe("thread workflows", () => {
     expect(state.activeRun?.id).toBe("active");
     expect(state.canReorder).toBe(true);
     expect(state.canPromoteToSteer).toBe(true);
+    expect(state.canSquash).toBe(true);
   });
 
   it("keeps held messages visible and clears the hold when they leave the queue", () => {
@@ -356,6 +365,47 @@ describe("thread workflows", () => {
       false,
     );
     expect(canDetachThreadProviderSession(projection)).toBe(true);
+  });
+
+  it("drafts a squash from every queued message, carrying a shared context once", () => {
+    const skill = { version: 1, contextId: "ctx_skill", kind: "skill", label: "$x", name: "x" };
+    const queued = (id: string) => ({
+      run: { id },
+      text: id,
+      attachments: [{ id: `attachment-${id}` }],
+      messageId: `message-${id}`,
+      context: { version: 1, records: [skill] },
+    });
+
+    expect(deriveQueuedRunsSquashDraft([queued("one"), queued("two")] as never)).toEqual({
+      runIds: ["one", "two"],
+      text: "one\n\ntwo",
+      attachments: [{ id: "attachment-one" }, { id: "attachment-two" }],
+      context: { version: 1, records: [skill] },
+    });
+  });
+
+  it("offers squash only when the queued messages share a model", () => {
+    const queuedOn = (id: string, model: string) => ({
+      id,
+      status: "queued",
+      userMessageId: `message-${id}`,
+      ordinal: 1,
+      modelSelection: { instanceId: "codex", model },
+    });
+    const canSquash = (runs: ReadonlyArray<unknown>) =>
+      deriveThreadQueueWorkflowState({
+        thread: { id: "thread", activeProviderThreadId: null },
+        runs,
+        messages: [],
+        providerTurns: [],
+        providerThreads: [],
+        providerSessions: [],
+      } as never).canSquash;
+
+    expect(canSquash([queuedOn("one", "gpt-5.4")])).toBe(false);
+    expect(canSquash([queuedOn("one", "gpt-5.4"), queuedOn("two", "gpt-5.5")])).toBe(false);
+    expect(canSquash([queuedOn("one", "gpt-5.4"), queuedOn("two", "gpt-5.4")])).toBe(true);
   });
 
   it("allows native, portable, and capability-unknown exact-run forks", () => {

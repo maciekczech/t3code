@@ -12,6 +12,8 @@ import { assetImageSource } from "../../lib/assetImageSource";
  * out. This is that way out, and the only place the edit announces itself.
  */
 export function ComposerQueuedEditBanner(props: {
+  /** How many queued messages the edit squashes into one; absent for a plain edit. */
+  readonly squashCount?: number | undefined;
   readonly saving: boolean;
   readonly onCancel: () => void;
 }) {
@@ -19,7 +21,9 @@ export function ComposerQueuedEditBanner(props: {
     <View className="flex-row items-center gap-2 px-4 pb-2">
       <SymbolView name="pencil" size={12} tintColorClassName="accent-foreground-muted" />
       <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
-        Editing queued message
+        {props.squashCount === undefined
+          ? "Editing queued message"
+          : `Squashing ${props.squashCount} queued messages into one`}
       </Text>
       <Pressable
         accessibilityRole="button"

@@ -19,12 +19,15 @@ import {
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
+  COMPOSER_CONTEXT_MAX_RECORDS,
   CommandId,
   isProviderNativeSubagentThread,
   MessageId,
   type NodeId,
   type ModelSelection,
   OrchestrationV2Command,
+  getProviderAttachmentLimitError,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type OrchestrationV2InternalCommand,
   type OrchestrationV2ServerCommand,
   type ThreadPullRequestLink,
@@ -474,6 +477,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.reorder":
     case "queued-run.cancel":
     case "queued-run.edit":
+    case "queued-runs.squash":
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -7979,6 +7983,105 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  const dispatchQueuedRunsSquash = (
+    command: Extract<OrchestrationV2Command, { readonly type: "queued-runs.squash" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const reject = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      if (command.runIds.length < 2 || new Set(command.runIds).size !== command.runIds.length) {
+        return yield* reject("Squashing needs at least two different queued messages.");
+      }
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "messages", "nodes", "attempts"], {
+          messageRoles: ["user"],
+        })
+        .pipe(
+          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+        );
+      if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
+        return yield* reject(`Thread ${command.threadId} is not active.`);
+      }
+      const queued: Array<{
+        readonly run: OrchestrationV2Run;
+        readonly message: OrchestrationV2ConversationMessage;
+      }> = [];
+      for (const runId of command.runIds) {
+        const run = projection.runs.find((candidate) => candidate.id === runId);
+        const message = projection.messages.find(
+          (candidate) => candidate.id === run?.userMessageId,
+        );
+        if (run === undefined || run.status !== "queued" || message === undefined) {
+          return yield* reject(`Run ${runId} is not queued.`);
+        }
+        if (message.delegatedCompletion !== undefined || message.notification !== undefined) {
+          return yield* reject("Automatic completion deliveries cannot be squashed.");
+        }
+        queued.push({ run, message });
+      }
+      const [kept, ...absorbed] = queued;
+      if (kept === undefined) return;
+      // The merged message runs on the kept run's model, so a different one would be dropped silently.
+      if (
+        absorbed.some(
+          ({ run }) => !modelSelectionsEqual(run.modelSelection, kept.run.modelSelection),
+        )
+      ) {
+        return yield* reject("Queued messages on different models cannot be squashed.");
+      }
+
+      const text = command.text ?? queued.map(({ message }) => message.text).join("\n\n");
+      const attachments =
+        command.attachments ?? queued.flatMap(({ message }) => message.attachments);
+      // Context ids are unique per message only: two messages referencing the
+      // same thread share one id, and a merged message may carry it once.
+      const records = [
+        ...new Map(
+          queued
+            .flatMap(({ message }) => message.context?.records ?? [])
+            .map((record) => [record.contextId, record] as const),
+        ).values(),
+      ];
+      const context =
+        command.context ?? (records.length === 0 ? undefined : { version: 1 as const, records });
+      if (text.trim().length === 0) {
+        return yield* reject("Queued messages cannot be squashed into an empty message.");
+      }
+      // Each message fit these limits alone; the merged one has to fit them too, or it fails when it starts.
+      if (text.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+        return yield* reject("These queued messages are too long to squash into one.");
+      }
+      const attachmentLimitError = getProviderAttachmentLimitError(attachments);
+      if (attachmentLimitError !== undefined) {
+        return yield* reject(attachmentLimitError);
+      }
+      if ((context?.records.length ?? 0) > COMPOSER_CONTEXT_MAX_RECORDS) {
+        return yield* reject("These queued messages reference too much context to squash.");
+      }
+
+      const now = yield* DateTime.now;
+      for (const { run } of absorbed) {
+        yield* emitQueuedRunCancellation({ command, events, projection, run, now });
+      }
+      yield* dispatchQueuedRunEdit(
+        {
+          type: "queued-run.edit",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          runId: kept.run.id,
+          text,
+          attachments,
+          ...(context ? { context } : {}),
+        },
+        events,
+      );
+    });
+
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
     command: OrchestrationV2Command,
     fields: ReadonlyArray<K>,
@@ -10899,6 +11002,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "queued-run.edit":
         yield* dispatchQueuedRunEdit(command, events);
         break;
+      case "queued-runs.squash":
+        yield* dispatchQueuedRunsSquash(command, events);
+        break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);
         break;
@@ -11058,7 +11164,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ),
             );
           if (
-            command.type === "queued-run.edit" &&
+            (command.type === "queued-run.edit" || command.type === "queued-runs.squash") &&
             receipt.status === "rejected" &&
             cause._tag === "OrchestratorDispatchError"
           ) {

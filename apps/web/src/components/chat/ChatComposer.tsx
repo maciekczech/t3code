@@ -1386,6 +1386,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   canResume: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   isEditingQueuedMessage: boolean;
+  editingQueuedSubmitLabel?: string | undefined;
   onSubmitMessage: React.MouseEventHandler<HTMLButtonElement>;
   onResume: () => void;
   onPreviousPendingQuestion: () => void;
@@ -1430,6 +1431,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         canResume={props.canResume}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         isEditingQueuedMessage={props.isEditingQueuedMessage}
+        editingQueuedSubmitLabel={props.editingQueuedSubmitLabel}
         onSubmitMessage={props.onSubmitMessage}
         onResume={props.onResume}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
@@ -1663,6 +1665,8 @@ export interface ChatComposerProps {
     readonly url: string | null;
   }> | null;
   onRemoveEditingQueuedAttachment: (attachmentId: string) => void;
+  /** Names the send action when saving the edit does more than update one queued message. */
+  editingQueuedSubmitLabel?: string | undefined;
 
   // Callbacks
   onCompactContext: () => void;
@@ -1814,6 +1818,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
     onFileOpen,
     editingQueuedAttachments,
+    editingQueuedSubmitLabel,
     onRemoveEditingQueuedAttachment,
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -7767,6 +7772,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     canResume={showResumeAction}
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
                     isEditingQueuedMessage={isEditingQueuedMessage}
+                    editingQueuedSubmitLabel={editingQueuedSubmitLabel}
                     onSubmitMessage={handleSubmitMessage}
                     onResume={onResume}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}

@@ -46,6 +46,7 @@ interface ComposerPrimaryActionsProps {
   canResume?: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   isEditingQueuedMessage?: boolean;
+  editingQueuedSubmitLabel?: string | undefined;
   onSubmitMessage?: MouseEventHandler<HTMLButtonElement>;
   onResume?: () => void;
   onPreviousPendingQuestion: () => void;
@@ -104,6 +105,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   canResume = false,
   preserveComposerFocusOnPointerDown = false,
   isEditingQueuedMessage = false,
+  editingQueuedSubmitLabel = "Update queued message",
   onSubmitMessage,
   onResume,
   onPreviousPendingQuestion,
@@ -279,7 +281,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const submitLabel = showResume
     ? "Resume thread"
     : isEditingQueuedMessage
-      ? "Update queued message"
+      ? editingQueuedSubmitLabel
       : compactsBeforeSend
         ? "Compact and send"
         : isQueuing
