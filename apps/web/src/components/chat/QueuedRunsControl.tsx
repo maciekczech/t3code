@@ -294,21 +294,27 @@ export function QueuedRunsControl({
             <ListOrderedIcon />
           </ComposerBanner.Icon>
           <ComposerBanner.Content className="text-muted-foreground">
-            {squashing ? `Squashing ${props.squashingRunIds?.length} into one message` : "Queued"}
+            {squashing ? (
+              <>
+                <span className="truncate">Squashing {props.squashingRunIds?.length} messages</span>
+                <ComposerBanner.Separator />
+                <span className="relative flex shrink-0">
+                  <Button
+                    size="micro"
+                    variant="ghost-muted"
+                    aria-label="Cancel squashing queued messages"
+                    onClick={props.onCancelEdit}
+                  >
+                    Cancel
+                  </Button>
+                </span>
+              </>
+            ) : (
+              "Queued"
+            )}
           </ComposerBanner.Content>
           <ComposerBanner.Actions>
-            {squashing ? (
-              <span className="relative flex shrink-0">
-                <Button
-                  size="micro"
-                  variant="ghost"
-                  aria-label="Cancel squashing queued messages"
-                  onClick={props.onCancelEdit}
-                >
-                  Cancel
-                </Button>
-              </span>
-            ) : queued.length > 1 && props.editingRunId === null ? (
+            {!squashing && queued.length > 1 && props.editingRunId === null ? (
               <Tooltip>
                 <TooltipTrigger render={<span className="relative flex shrink-0" />}>
                   <Button
