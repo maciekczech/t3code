@@ -74,6 +74,8 @@ export function QueuedRunsControl({
   readonly editingRunId: RunId | null;
   /** Every run being merged while a squash is edited; its first entry is `editingRunId`. */
   readonly squashingRunIds: ReadonlyArray<RunId> | null;
+  /** The environment's server understands the squash command. */
+  readonly supportsSquash: boolean;
   readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
 }) {
@@ -103,7 +105,7 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
-  const canSquash = workflow?.canSquash === true;
+  const canSquash = props.supportsSquash && workflow?.canSquash === true;
   const queuedImageAttachmentIds = useMemo(() => {
     const ids: string[] = [];
     for (const { attachments } of workflow?.queuedRuns ?? []) {

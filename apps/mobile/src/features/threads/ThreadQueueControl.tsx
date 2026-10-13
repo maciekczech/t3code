@@ -24,6 +24,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { useAssetUrl } from "../../state/assets";
+import { useServerConfigs } from "../../state/entities";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
@@ -83,6 +84,8 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const supportsSquash =
+    useServerConfigs().get(target.environmentId)?.environment.capabilities.queuedRunSquash === true;
   const order = queuedRuns.map(({ run }) => run.id).join(",");
 
   useEffect(() => {
@@ -229,7 +232,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
-      {workflow?.canSquash === true ? (
+      {supportsSquash && workflow?.canSquash === true ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">
             Combine every message into one queued message and edit it.

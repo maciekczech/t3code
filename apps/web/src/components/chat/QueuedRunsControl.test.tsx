@@ -67,6 +67,7 @@ describe("QueuedRunsControl automatic completion delivery", () => {
         threadId={"thread:test" as never}
         editingRunId={null}
         squashingRunIds={null}
+        supportsSquash
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
       />,
@@ -109,6 +110,7 @@ describe("QueuedRunsControl attachments and edit mode", () => {
         threadId={"thread:test" as never}
         editingRunId={null}
         squashingRunIds={null}
+        supportsSquash
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
       />,
@@ -146,6 +148,7 @@ describe("QueuedRunsControl attachments and edit mode", () => {
         threadId={"thread:test" as never}
         editingRunId={null}
         squashingRunIds={null}
+        supportsSquash
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
       />,
@@ -165,6 +168,7 @@ describe("QueuedRunsControl attachments and edit mode", () => {
         threadId={"thread:test" as never}
         editingRunId={"run:queued" as never}
         squashingRunIds={null}
+        supportsSquash
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
       />,

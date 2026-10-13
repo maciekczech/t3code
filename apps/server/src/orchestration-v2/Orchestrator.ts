@@ -26,7 +26,8 @@ import {
   type NodeId,
   type ModelSelection,
   OrchestrationV2Command,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  getProviderAttachmentLimitError,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type OrchestrationV2InternalCommand,
   type OrchestrationV2ServerCommand,
   type ThreadPullRequestLink,
@@ -8069,11 +8070,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (text.trim().length === 0) {
         return yield* reject("Queued messages cannot be squashed into an empty message.");
       }
-      if (
-        attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS ||
-        (context?.records.length ?? 0) > COMPOSER_CONTEXT_MAX_RECORDS
-      ) {
-        return yield* reject("These queued messages carry too many attachments to squash.");
+      // Each message fit these limits alone; the merged one has to fit them too, or it fails when it starts.
+      if (text.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+        return yield* reject("These queued messages are too long to squash into one.");
+      }
+      const attachmentLimitError = getProviderAttachmentLimitError(attachments);
+      if (attachmentLimitError !== undefined) {
+        return yield* reject(attachmentLimitError);
+      }
+      if ((context?.records.length ?? 0) > COMPOSER_CONTEXT_MAX_RECORDS) {
+        return yield* reject("These queued messages reference too much context to squash.");
       }
 
       const now = yield* DateTime.now;
