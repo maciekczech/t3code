@@ -4734,7 +4734,7 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const cancelEditingQueuedRun = useCallback(() => {
-    if (editingQueuedRun === null) return;
+    if (editingQueuedRun === null || queuedEditSaveInFlightRef.current) return;
     clearComposerDraftContent(queuedEditDraftTargetFor(editingQueuedRun.runId));
     setEditingQueuedRun(null);
     scheduleComposerFocus();
@@ -4765,7 +4765,8 @@ export default function ChatView(props: ChatViewProps) {
       setEditingQueuedRun(null);
       return;
     }
-    if (serverProjection === null) return;
+    // A squash being saved cancels its own runs; that is not a remote change.
+    if (serverProjection === null || queuedEditSaveInFlightRef.current) return;
     const stillQueued = (editingQueuedRun.squashRunIds ?? [editingQueuedRun.runId]).every(
       (runId) =>
         serverProjection.runs.find((candidate) => candidate.id === runId)?.status === "queued",

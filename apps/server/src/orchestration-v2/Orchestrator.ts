@@ -8046,7 +8046,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const text = command.text ?? queued.map(({ message }) => message.text).join("\n\n");
       const attachments =
         command.attachments ?? queued.flatMap(({ message }) => message.attachments);
-      const records = queued.flatMap(({ message }) => message.context?.records ?? []);
+      // Context ids are unique per message only: two messages referencing the
+      // same thread share one id, and a merged message may carry it once.
+      const records = [
+        ...new Map(
+          queued
+            .flatMap(({ message }) => message.context?.records ?? [])
+            .map((record) => [record.contextId, record] as const),
+        ).values(),
+      ];
       const context =
         command.context ?? (records.length === 0 ? undefined : { version: 1 as const, records });
       if (text.trim().length === 0) {

@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
+  ComposerContextId,
   type ApplicationStoredEvent,
   CheckpointId,
   CheckpointRef,
@@ -4327,6 +4328,23 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
                     sizeBytes: 128,
                   },
                 ],
+          // Both squashed messages reference the same skill under one context id.
+          ...(index === 0 || index === 3
+            ? {}
+            : {
+                context: {
+                  version: 1 as const,
+                  records: [
+                    {
+                      version: 1 as const,
+                      contextId: ComposerContextId.make("ctx_skill"),
+                      kind: "skill" as const,
+                      label: "$pinchtab",
+                      name: "pinchtab",
+                    },
+                  ],
+                },
+              }),
           modelSelection,
           dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
         });
@@ -4365,6 +4383,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.deepEqual(
         mergedMessage?.attachments.map((attachment) => attachment.id),
         ["runtime-layer-queued-squash-attachment-2", "runtime-layer-queued-squash-attachment-1"],
+      );
+      assert.deepEqual(
+        mergedMessage?.context?.records.map((record) => record.contextId),
+        ["ctx_skill"],
       );
 
       yield* orchestrator.dispatch({
