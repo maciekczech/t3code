@@ -4766,7 +4766,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     // A squash being saved cancels its own runs; that is not a remote change.
-    if (serverProjection === null || queuedEditSaveInFlightRef.current) return;
+    if (serverProjection === null || isSavingQueuedEdit) return;
     const stillQueued = (editingQueuedRun.squashRunIds ?? [editingQueuedRun.runId]).every(
       (runId) =>
         serverProjection.runs.find((candidate) => candidate.id === runId)?.status === "queued",
@@ -4799,6 +4799,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.id,
     baseComposerDraftTarget,
     editingQueuedRun,
+    isSavingQueuedEdit,
     queuedEditDraftTargetFor,
     serverProjection,
   ]);
