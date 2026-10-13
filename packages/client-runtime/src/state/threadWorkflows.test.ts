@@ -77,13 +77,20 @@ describe("thread workflows", () => {
           activeAttemptId: "attempt-active",
           ordinal: 1,
         },
-        { id: "later", status: "queued", userMessageId: "message-later", ordinal: 3 },
+        {
+          id: "later",
+          status: "queued",
+          userMessageId: "message-later",
+          ordinal: 3,
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        },
         {
           id: "first",
           status: "queued",
           userMessageId: "message-first",
           ordinal: 2,
           queuePosition: 1,
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
         },
       ],
       messages: [
@@ -136,6 +143,7 @@ describe("thread workflows", () => {
     expect(state.activeRun?.id).toBe("active");
     expect(state.canReorder).toBe(true);
     expect(state.canPromoteToSteer).toBe(true);
+    expect(state.canSquash).toBe(true);
   });
 
   it("keeps held messages visible and clears the hold when they leave the queue", () => {
@@ -356,6 +364,29 @@ describe("thread workflows", () => {
       false,
     );
     expect(canDetachThreadProviderSession(projection)).toBe(true);
+  });
+
+  it("offers squash only when the queued messages share a model", () => {
+    const queuedOn = (id: string, model: string) => ({
+      id,
+      status: "queued",
+      userMessageId: `message-${id}`,
+      ordinal: 1,
+      modelSelection: { instanceId: "codex", model },
+    });
+    const canSquash = (runs: ReadonlyArray<unknown>) =>
+      deriveThreadQueueWorkflowState({
+        thread: { id: "thread", activeProviderThreadId: null },
+        runs,
+        messages: [],
+        providerTurns: [],
+        providerThreads: [],
+        providerSessions: [],
+      } as never).canSquash;
+
+    expect(canSquash([queuedOn("one", "gpt-5.4")])).toBe(false);
+    expect(canSquash([queuedOn("one", "gpt-5.4"), queuedOn("two", "gpt-5.5")])).toBe(false);
+    expect(canSquash([queuedOn("one", "gpt-5.4"), queuedOn("two", "gpt-5.4")])).toBe(true);
   });
 
   it("allows native, portable, and capability-unknown exact-run forks", () => {

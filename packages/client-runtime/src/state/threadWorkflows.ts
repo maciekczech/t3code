@@ -5,6 +5,7 @@ import type {
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 
 type Projection = OrchestrationV2ThreadProjection;
 type Run = Projection["runs"][number];
@@ -26,8 +27,8 @@ export interface QueuedThreadRun {
   /** Editing replaces this message's content, so its id and context travel with the row. */
   readonly messageId: Message["id"];
   readonly context?: Message["context"];
-  /** How many original messages an unsquash gives back. Absent = not squashed. */
-  readonly squashedCount?: number;
+  /** Unsquash can give back the messages this one replaced. */
+  readonly isSquashed: boolean;
 }
 
 export interface ThreadQueueWorkflowState {
@@ -36,6 +37,8 @@ export interface ThreadQueueWorkflowState {
   readonly isHeld: boolean;
   readonly canReorder: boolean;
   readonly canPromoteToSteer: boolean;
+  /** Two or more queued messages on one model: a squash keeps the first message's model. */
+  readonly canSquash: boolean;
 }
 
 export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Run | null {
@@ -149,17 +152,23 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
       attachments: message?.attachments ?? [],
       messageId: run.userMessageId,
       ...(message?.context ? { context: message.context } : {}),
-      ...(message?.squashedFrom
-        ? { squashedCount: message.squashedFrom.absorbedRunIds.length + 1 }
-        : {}),
+      isSquashed: message?.squashedFrom !== undefined,
     };
   });
+
+  const firstQueued = queuedRuns[0]?.run;
 
   return {
     activeRun,
     queuedRuns,
     isHeld: projection.runs.some((run) => run.status === "queued" && run.queueHeld === true),
     canReorder: capabilities?.supportsQueuedMessages === true,
+    canSquash:
+      firstQueued !== undefined &&
+      queuedRuns.length > 1 &&
+      queuedRuns.every(({ run }) =>
+        modelSelectionsEqual(run.modelSelection, firstQueued.modelSelection),
+      ),
     canPromoteToSteer:
       hasSteerableProviderTurn &&
       (capabilities?.supportsActiveSteering === true ||

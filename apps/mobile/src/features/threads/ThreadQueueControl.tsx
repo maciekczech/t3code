@@ -228,7 +228,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
-      {queuedRuns.length > 1 ? (
+      {workflow?.canSquash === true ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">
             Combine every message into one queued message and edit it.
@@ -245,7 +245,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           No messages waiting in this queue.
         </Text>
       ) : null}
-      {queuedRuns.map(({ run, text, attachments, squashedCount }, index) => {
+      {queuedRuns.map(({ run, text, attachments, isSquashed }, index) => {
         const layout = dragRows?.find((row) => row.id === run.id);
         const offset =
           sourceLayout?.y !== undefined &&
@@ -379,12 +379,12 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       attributes: { disabled: !controls.canEdit },
                       image: Platform.OS === "ios" ? "pencil" : "edit",
                     },
-                    ...(squashedCount === undefined
+                    ...(!isSquashed
                       ? []
                       : [
                           {
                             id: "unsquash",
-                            title: `Unsquash into ${squashedCount} messages`,
+                            title: "Unsquash",
                             attributes: { disabled: !controls.canEdit },
                           },
                         ]),

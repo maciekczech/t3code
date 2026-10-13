@@ -100,6 +100,7 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
+  const canSquash = workflow?.canSquash === true;
   const queuedImageAttachmentIds = useMemo(() => {
     const ids: string[] = [];
     for (const { attachments } of workflow?.queuedRuns ?? []) {
@@ -142,8 +143,8 @@ export function QueuedRunsControl({
     (message) => message.inputIntent === "queued_turn" && !acknowledgedMessageIds.has(message.id),
   );
   const items = [
-    ...queued.map(({ run, text, attachments, squashedCount }, serverIndex) => ({
-      squashedCount: squashedCount ?? 0,
+    ...queued.map(({ run, text, attachments, isSquashed }, serverIndex) => ({
+      isSquashed,
       key: run.id,
       runId: run.id,
       messageId: run.userMessageId,
@@ -160,7 +161,7 @@ export function QueuedRunsControl({
       pending: false,
     })),
     ...optimisticQueued.map((message) => ({
-      squashedCount: 0,
+      isSquashed: false,
       key: message.id,
       runId: null,
       messageId: null,
@@ -330,7 +331,7 @@ export function QueuedRunsControl({
             )}
           </ComposerBanner.Content>
           <ComposerBanner.Actions>
-            {!squashing && queued.length > 1 && props.editingRunId === null ? (
+            {!squashing && canSquash && props.editingRunId === null ? (
               <Tooltip>
                 <TooltipTrigger render={<span className="relative flex shrink-0" />}>
                   <Button
@@ -504,7 +505,7 @@ export function QueuedRunsControl({
                       </Button>
                     ) : (
                       <>
-                        {item.runId !== null && item.squashedCount > 0 ? (
+                        {item.runId !== null && item.isSquashed ? (
                           <Tooltip>
                             <TooltipTrigger
                               render={
@@ -521,9 +522,7 @@ export function QueuedRunsControl({
                             >
                               <UnfoldVerticalIcon />
                             </TooltipTrigger>
-                            <TooltipPopup>
-                              {`Unsquash into the ${item.squashedCount} original messages`}
-                            </TooltipPopup>
+                            <TooltipPopup>Unsquash into the original messages</TooltipPopup>
                           </Tooltip>
                         ) : null}
                         <Tooltip>
