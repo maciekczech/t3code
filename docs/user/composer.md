@@ -213,6 +213,11 @@ you had typed in the composer before starting the edit is restored afterwards. I
 message starts or is removed while you are editing, the edit ends: changed content moves into the
 composer when it is empty, and is discarded otherwise.
 
+With two or more queued messages, **Squash** combines them into one. They open in the composer
+joined in queue order, so you can edit the result first. Sending delivers it as a single steer
+while the agent is working; otherwise it stays as one queued message. **Cancel** leaves the queue
+unchanged. On mobile, **Squash** is in the queue sheet.
+
 ## Commands and skills
 
 Type `/` for commands or `$` to add a skill from the selected environment and
