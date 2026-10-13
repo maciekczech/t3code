@@ -4432,6 +4432,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         runIds: [second.id, third.id],
         text: "One edited message",
         attachments: [],
+        // An emptied context is not replaced by the originals' context.
+        context: { version: 1, records: [] },
       });
       const edited = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
@@ -4441,6 +4443,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const editedMessage = edited.messages.find((message) => message.id === second.userMessageId);
       assert.equal(editedMessage?.text, "One edited message");
       assert.deepEqual(editedMessage?.attachments, []);
+      assert.deepEqual(editedMessage?.context?.records ?? [], []);
 
       const staleError = yield* orchestrator
         .dispatch({

@@ -8015,7 +8015,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject("Squashing needs at least two different queued messages.");
       }
       const projection = yield* projectionStore
-        .getThreadRecords(command.threadId, ["runs", "messages"], {
+        .getThreadRecords(command.threadId, ["runs", "messages", "nodes", "attempts"], {
           messageRoles: ["user"],
         })
         .pipe(
@@ -8076,16 +8076,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* reject("These queued messages carry too many attachments to squash.");
       }
 
+      const now = yield* DateTime.now;
       for (const { run } of absorbed) {
-        yield* dispatchQueuedRunCancel(
-          {
-            type: "queued-run.cancel",
-            commandId: command.commandId,
-            threadId: command.threadId,
-            runId: run.id,
-          },
-          events,
-        );
+        yield* emitQueuedRunCancellation({ command, events, projection, run, now });
       }
       // Squashing an already squashed message keeps its first original, so one
       // unsquash always returns every message as it was written.

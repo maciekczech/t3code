@@ -1,5 +1,8 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  deriveQueuedRunsSquashDraft,
+  deriveThreadQueueWorkflowState,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import type {
   ChatAttachment as ContractChatAttachment,
@@ -249,17 +252,14 @@ export function QueuedRunsControl({
   const squashAll = () => {
     const first = queued[0];
     if (!first || queued.length < 2) return;
-    const records = queued.flatMap(({ context }) => context?.records ?? []);
+    const draft = deriveQueuedRunsSquashDraft(queued);
     setExpanded(true);
     props.onEditQueuedRun({
       runId: first.run.id,
       messageId: first.run.userMessageId,
-      text: queued.map(({ text }) => text).join("\n\n"),
-      attachments: queued.flatMap(({ attachments }) => attachments),
-      squash: {
-        runIds: queued.map(({ run }) => run.id),
-        context: records.length === 0 ? undefined : { version: 1, records },
-      },
+      text: draft.text,
+      attachments: draft.attachments,
+      squash: { runIds: draft.runIds, context: draft.context },
     });
   };
 

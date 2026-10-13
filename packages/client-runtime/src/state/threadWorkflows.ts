@@ -41,6 +41,24 @@ export interface ThreadQueueWorkflowState {
   readonly canSquash: boolean;
 }
 
+/** What a squash of these queued messages starts from: everything joined in queue order. */
+export function deriveQueuedRunsSquashDraft(queuedRuns: ReadonlyArray<QueuedThreadRun>) {
+  // Messages that reference the same thread or skill share a context id, which one message may carry once.
+  const records = [
+    ...new Map(
+      queuedRuns
+        .flatMap(({ context }) => context?.records ?? [])
+        .map((record) => [record.contextId, record] as const),
+    ).values(),
+  ];
+  return {
+    runIds: queuedRuns.map(({ run }) => run.id),
+    text: queuedRuns.map(({ text }) => text).join("\n\n"),
+    attachments: queuedRuns.flatMap(({ attachments }) => attachments),
+    context: records.length === 0 ? undefined : { version: 1 as const, records },
+  };
+}
+
 export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Run | null {
   return projection.runs.findLast((run) => ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
 }
