@@ -300,7 +300,7 @@ export function QueuedRunsControl({
             {squashing ? (
               <span className="relative flex shrink-0">
                 <Button
-                  size="xs"
+                  size="micro"
                   variant="ghost"
                   aria-label="Cancel squashing queued messages"
                   onClick={props.onCancelEdit}
@@ -312,7 +312,7 @@ export function QueuedRunsControl({
               <Tooltip>
                 <TooltipTrigger render={<span className="relative flex shrink-0" />}>
                   <Button
-                    size="xs"
+                    size="micro"
                     variant="ghost-muted"
                     disabled={busyRunId !== null}
                     onClick={squashAll}
