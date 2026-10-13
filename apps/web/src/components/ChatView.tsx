@@ -107,7 +107,10 @@ import {
   presentPendingBackgroundWork,
   presentProviderGoal,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  deriveThreadQueueWorkflowState,
+  threadSupportsProviderHandoff,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
@@ -1687,6 +1690,8 @@ export default function ChatView(props: ChatViewProps) {
     readonly originalText: string;
     readonly existingAttachments: ReadonlyArray<ContractChatAttachment>;
     readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
+    /** Set while the edit squashes these queued runs into `runId`, the first of them. */
+    readonly squashRunIds: ReadonlyArray<RunId> | null;
   } | null>(null);
   const queuedEditDraftTargetFor = useCallback(
     (runId: RunId) => DraftId.make(`queued-edit:${scopedThreadKey(routeThreadRef)}:${runId}`),
@@ -2142,6 +2147,13 @@ export default function ChatView(props: ChatViewProps) {
     isServerThread &&
     serverProjection?.runs.some((run) => run.status === "queued" && run.queueHeld === true) ===
       true;
+  // A squash goes out as one steer while the running turn can take one; otherwise the
+  // merged message stays queued.
+  const queuedSquashSteerRunId = useMemo(() => {
+    if (!editingQueuedRun?.squashRunIds || serverProjection === null) return null;
+    const workflow = deriveThreadQueueWorkflowState(serverProjection);
+    return workflow.canPromoteToSteer ? (workflow.activeRun?.id ?? null) : null;
+  }, [editingQueuedRun?.squashRunIds, serverProjection]);
   const resumableRunId = useMemo(() => {
     if (!isServerThread || serverProjection === null) return null;
     const run = latestExecutedRun(serverProjection.runs);
@@ -4662,6 +4674,9 @@ export default function ChatView(props: ChatViewProps) {
   const editQueuedRunCommand = useAtomCommand(threadEnvironment.editQueuedRun, {
     reportFailure: false,
   });
+  const squashQueuedRunsCommand = useAtomCommand(threadEnvironment.squashQueuedRuns, {
+    reportFailure: false,
+  });
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
   const queuedEditSaveInFlightRef = useRef(false);
   const [isSavingQueuedEdit, setIsSavingQueuedEdit] = useState(false);
@@ -4701,8 +4716,10 @@ export default function ChatView(props: ChatViewProps) {
         messageId: request.messageId,
         originalText: request.text,
         existingAttachments: request.attachments,
-        context: serverProjection?.messages.find((message) => message.id === request.messageId)
-          ?.context,
+        context: request.squash
+          ? request.squash.context
+          : serverProjection?.messages.find((message) => message.id === request.messageId)?.context,
+        squashRunIds: request.squash?.runIds ?? null,
       });
       scheduleComposerFocus();
     },
@@ -4749,8 +4766,11 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     if (serverProjection === null) return;
-    const run = serverProjection.runs.find((candidate) => candidate.id === editingQueuedRun.runId);
-    if (run !== undefined && run.status === "queued") return;
+    const stillQueued = (editingQueuedRun.squashRunIds ?? [editingQueuedRun.runId]).every(
+      (runId) =>
+        serverProjection.runs.find((candidate) => candidate.id === runId)?.status === "queued",
+    );
+    if (stillQueued) return;
     const recovery = recoverQueuedMessageEdit({
       editTarget: queuedEditDraftTargetFor(editingQueuedRun.runId),
       threadTarget: baseComposerDraftTarget,
@@ -9035,50 +9055,71 @@ export default function ChatView(props: ChatViewProps) {
             return uploaded;
           },
         });
-        const result = await editQueuedRunCommand({
-          environmentId: activeThread.environmentId,
-          input: {
-            threadId: editingQueuedRun.threadId,
-            runId: editingQueuedRun.runId,
-            text: editText.length === 0 ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT : editText,
-            edit: {
-              messageId: editingQueuedRun.messageId,
-              attachments: uploads,
-              context: {
-                version: 1,
-                records: [
-                  ...new Map(
-                    [
-                      ...(editingQueuedRun.context?.records ?? []).filter(
-                        (record) =>
-                          !("attachmentId" in record) ||
-                          editingQueuedRun.existingAttachments.some(
-                            (attachment) => attachment.id === record.attachmentId,
-                          ),
+        const edit = {
+          messageId: editingQueuedRun.messageId,
+          attachments: uploads,
+          context: {
+            version: 1 as const,
+            records: [
+              ...new Map(
+                [
+                  ...(editingQueuedRun.context?.records ?? []).filter(
+                    (record) =>
+                      !("attachmentId" in record) ||
+                      editingQueuedRun.existingAttachments.some(
+                        (attachment) => attachment.id === record.attachmentId,
                       ),
-                      ...(buildMessageContext({
-                        terminalContexts: composerTerminalContexts.filter(
-                          (context) => context.text.trim().length > 0,
-                        ),
-                        reviewComments: composerReviewComments,
-                        previewAnnotations: composerPreviewAnnotations,
-                        threadContexts: composerThreadContexts,
-                        attachments: newEditAttachments.map((attachment, index) => ({
-                          attachment,
-                          attachmentId:
-                            uploads[editingQueuedRun.existingAttachments.length + index]?.id ??
-                            attachment.id,
-                        })),
-                      })?.records ?? []),
-                    ].map((record) => [record.contextId, record] as const),
-                  ).values(),
-                ],
-              },
-            },
+                  ),
+                  ...(buildMessageContext({
+                    terminalContexts: composerTerminalContexts.filter(
+                      (context) => context.text.trim().length > 0,
+                    ),
+                    reviewComments: composerReviewComments,
+                    previewAnnotations: composerPreviewAnnotations,
+                    threadContexts: composerThreadContexts,
+                    attachments: newEditAttachments.map((attachment, index) => ({
+                      attachment,
+                      attachmentId:
+                        uploads[editingQueuedRun.existingAttachments.length + index]?.id ??
+                        attachment.id,
+                    })),
+                  })?.records ?? []),
+                ].map((record) => [record.contextId, record] as const),
+              ).values(),
+            ],
           },
-        });
+        };
+        const text = editText.length === 0 ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT : editText;
+        const result =
+          editingQueuedRun.squashRunIds === null
+            ? await editQueuedRunCommand({
+                environmentId: activeThread.environmentId,
+                input: {
+                  threadId: editingQueuedRun.threadId,
+                  runId: editingQueuedRun.runId,
+                  text,
+                  edit,
+                },
+              })
+            : await squashQueuedRunsCommand({
+                environmentId: activeThread.environmentId,
+                input: {
+                  threadId: editingQueuedRun.threadId,
+                  runIds: editingQueuedRun.squashRunIds,
+                  text,
+                  ...edit,
+                  ...(queuedSquashSteerRunId === null
+                    ? {}
+                    : { targetRunId: queuedSquashSteerRunId }),
+                },
+              });
         if (result._tag === "Failure") {
-          setThreadError(editingQueuedRun.threadId, "Could not save the edited queued message.");
+          setThreadError(
+            editingQueuedRun.threadId,
+            editingQueuedRun.squashRunIds === null
+              ? "Could not save the edited queued message."
+              : "Could not squash the queued messages.",
+          );
           return;
         }
         setThreadError(editingQueuedRun.threadId, null);
@@ -10972,6 +11013,7 @@ export default function ChatView(props: ChatViewProps) {
           threadId={activeThread.id}
           optimisticMessages={optimisticUserMessages}
           editingRunId={editingQueuedRun?.runId ?? null}
+          squashingRunIds={editingQueuedRun?.squashRunIds ?? null}
           onEditQueuedRun={beginEditingQueuedRun}
           onCancelEdit={cancelEditingQueuedRun}
         />
@@ -10981,6 +11023,7 @@ export default function ChatView(props: ChatViewProps) {
       beginEditingQueuedRun,
       cancelEditingQueuedRun,
       editingQueuedRun?.runId,
+      editingQueuedRun?.squashRunIds,
       isServerThread,
       keybindings,
       optimisticUserMessages,
@@ -11895,6 +11938,13 @@ export default function ChatView(props: ChatViewProps) {
                               onExpandImage={onExpandTimelineImage}
                               onFileOpen={openFileAttachment}
                               editingQueuedAttachments={composerEditingQueuedAttachments}
+                              editingQueuedSubmitLabel={
+                                editingQueuedRun?.squashRunIds
+                                  ? queuedSquashSteerRunId === null
+                                    ? "Squash into one queued message"
+                                    : "Squash and steer"
+                                  : undefined
+                              }
                               onRemoveEditingQueuedAttachment={removeEditingQueuedAttachment}
                             />
                           )}

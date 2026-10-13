@@ -3056,6 +3056,21 @@ export const OrchestrationV2Command = Schema.Union([
     // so pre-attachment clients editing text keep the original attachments.
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
   }),
+  /**
+   * Merges queued messages into the first listed run and cancels the rest. With a
+   * target run the merged message is delivered as one steer instead of staying queued.
+   */
+  Schema.Struct({
+    type: Schema.Literal("queued-runs.squash"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runIds: Schema.Array(RunId),
+    // Absent = the messages' own text, attachments and context, joined in the listed order.
+    text: Schema.optional(Schema.String),
+    attachments: Schema.optional(Schema.Array(ChatAttachment)),
+    context: Schema.optional(OrchestrationMessageContext),
+    targetRunId: Schema.optional(RunId),
+  }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),
     commandId: CommandId,

@@ -290,6 +290,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       targetRunId: input.targetRunId,
     })),
   ),
+  t3_queue_squash: writesThread((input) =>
+    dispatch(input.threadId, (common) => ({
+      ...common,
+      type: "queued-runs.squash",
+      runIds: input.queuedRunIds,
+      ...(input.text === undefined ? {} : { text: input.text }),
+      ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
+    })),
+  ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {
       const { threads, projection, caller } = yield* readThread(input.threadId);

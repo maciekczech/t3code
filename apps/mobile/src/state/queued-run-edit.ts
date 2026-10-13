@@ -39,6 +39,8 @@ export interface QueuedRunEdit {
   /** Server attachments still attached; removing one drops it from this list. */
   readonly existingAttachments: ReadonlyArray<ChatAttachment>;
   readonly context?: OrchestrationMessageContext;
+  /** Set when saving squashes these queued runs, in queue order, into `runId`. */
+  readonly squashRunIds?: ReadonlyArray<RunId>;
 }
 
 export const queuedRunEditsAtom = Atom.make<Readonly<Record<string, QueuedRunEdit>>>({}).pipe(

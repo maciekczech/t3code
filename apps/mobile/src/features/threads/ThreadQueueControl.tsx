@@ -165,6 +165,22 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     }
   };
 
+  const squashAll = () => {
+    const first = queuedRuns[0];
+    if (busyRef.current || !first || queuedRuns.length < 2) return;
+    const records = queuedRuns.flatMap(({ context }) => context?.records ?? []);
+    void Haptics.selectionAsync();
+    beginQueuedRunEdit(threadKey, {
+      runId: first.run.id,
+      messageId: first.messageId,
+      originalText: queuedRuns.map(({ text }) => text).join("\n\n"),
+      existingAttachments: queuedRuns.flatMap(({ attachments }) => attachments),
+      ...(records.length > 0 ? { context: { version: 1, records } } : {}),
+      squashRunIds: queuedRuns.map(({ run }) => run.id),
+    });
+    navigation.goBack();
+  };
+
   const canReorder = workflow?.canReorder === true && queuedRuns.length > 1;
   const sourceLayout = dragRows?.find((row) => row.id === draggedRunId);
   const lastLayout = dragRows?.at(-1);
@@ -209,6 +225,20 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           />
         </View>
       ) : null}
+      {queuedRuns.length > 1 ? (
+        <View className="gap-2 py-3">
+          <Text className="text-sm text-foreground-muted">
+            {workflow?.canPromoteToSteer
+              ? "Combine every message into one, edit it, and send it as a single steer."
+              : "Combine every message into one queued message and edit it."}
+          </Text>
+          <MaterialButton
+            label={`Squash ${queuedRuns.length} messages`}
+            disabled={busyRunId !== null || draggedRunId !== null || editing !== null}
+            onPress={squashAll}
+          />
+        </View>
+      ) : null}
       {queuedRuns.length === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No messages waiting in this queue.
@@ -228,7 +258,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
           canReorder: workflow?.canReorder ?? false,
           index,
-          isEditing: editing?.runId === run.id,
+          isEditing: editing?.squashRunIds?.includes(run.id) ?? editing?.runId === run.id,
           queuedCount: queuedRuns.length,
           text,
         });
