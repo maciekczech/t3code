@@ -16,6 +16,7 @@ import {
   GripVerticalIcon,
   ListOrderedIcon,
   PencilIcon,
+  UnfoldVerticalIcon,
 } from "lucide-react";
 import { useId, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
@@ -79,6 +80,7 @@ export function QueuedRunsControl({
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
+  const unsquash = useAtomCommand(threadEnvironment.unsquashQueuedRun);
   const [expanded, setExpanded] = useState(true);
   const queueListId = useId();
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
@@ -140,7 +142,8 @@ export function QueuedRunsControl({
     (message) => message.inputIntent === "queued_turn" && !acknowledgedMessageIds.has(message.id),
   );
   const items = [
-    ...queued.map(({ run, text, attachments }, serverIndex) => ({
+    ...queued.map(({ run, text, attachments, squashedCount }, serverIndex) => ({
+      squashedCount: squashedCount ?? 0,
       key: run.id,
       runId: run.id,
       messageId: run.userMessageId,
@@ -157,6 +160,7 @@ export function QueuedRunsControl({
       pending: false,
     })),
     ...optimisticQueued.map((message) => ({
+      squashedCount: 0,
       key: message.id,
       runId: null,
       messageId: null,
@@ -256,6 +260,18 @@ export function QueuedRunsControl({
         context: records.length === 0 ? undefined : { version: 1, records },
       },
     });
+  };
+
+  const splitSquashed = async (runId: RunId) => {
+    setBusyRunId(runId);
+    try {
+      await unsquash({
+        environmentId: props.environmentId,
+        input: { threadId: props.threadId, runId },
+      });
+    } finally {
+      setBusyRunId(null);
+    }
   };
 
   const remove = async (runId: RunId) => {
@@ -488,6 +504,28 @@ export function QueuedRunsControl({
                       </Button>
                     ) : (
                       <>
+                        {item.runId !== null && item.squashedCount > 0 ? (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  size="icon-xs"
+                                  variant="ghost-muted"
+                                  aria-label="Unsquash queued message"
+                                  disabled={busyRunId !== null}
+                                  onClick={() => {
+                                    if (item.runId !== null) void splitSquashed(item.runId);
+                                  }}
+                                />
+                              }
+                            >
+                              <UnfoldVerticalIcon />
+                            </TooltipTrigger>
+                            <TooltipPopup>
+                              {`Unsquash into the ${item.squashedCount} original messages`}
+                            </TooltipPopup>
+                          </Tooltip>
+                        ) : null}
                         <Tooltip>
                           <TooltipTrigger
                             render={

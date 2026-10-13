@@ -4389,6 +4389,42 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         ["ctx_skill"],
       );
 
+      // Unsquash returns both messages as written, the absorbed one right after the kept one.
+      yield* orchestrator.dispatch({
+        type: "queued-run.unsquash",
+        commandId: CommandId.make("runtime-layer-queued-unsquash"),
+        threadId,
+        runId: second.id,
+      });
+      const unsquashed = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        unsquashed.runs
+          .filter((run) => run.status === "queued")
+          .toSorted((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0))
+          .map((run) => unsquashed.messages.find((message) => message.id === run.userMessageId))
+          .map((message) => [message?.text, message?.attachments.length, message?.squashedFrom]),
+        [
+          ["Second", 1, undefined],
+          ["First", 1, undefined],
+          ["Third", 1, undefined],
+        ],
+      );
+      const notSquashedError = yield* orchestrator
+        .dispatch({
+          type: "queued-run.unsquash",
+          commandId: CommandId.make("runtime-layer-queued-unsquash-plain"),
+          threadId,
+          runId: second.id,
+        })
+        .pipe(Effect.flip);
+      assert.equal(notSquashedError._tag, "OrchestratorCommandRejectedError");
+      yield* orchestrator.dispatch({
+        type: "queued-runs.squash",
+        commandId: CommandId.make("runtime-layer-queued-squash-again"),
+        threadId,
+        runIds: [second.id, first.id],
+      });
+
       yield* orchestrator.dispatch({
         type: "queued-runs.squash",
         commandId: CommandId.make("runtime-layer-queued-squash-edited"),
@@ -4417,6 +4453,35 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(staleError._tag, "OrchestratorCommandRejectedError");
       const afterStale = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(afterStale.runs.find((run) => run.id === second.id)?.status, "queued");
+
+      // A message squashed twice and edited still unsquashes into every original.
+      yield* orchestrator.dispatch({
+        type: "queued-run.unsquash",
+        commandId: CommandId.make("runtime-layer-queued-unsquash-all"),
+        threadId,
+        runId: second.id,
+      });
+      const restored = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        restored.runs
+          .filter((run) => run.status === "queued")
+          .toSorted((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0))
+          .map((run) => [
+            run.id,
+            restored.messages.find((message) => message.id === run.userMessageId)?.text,
+          ]),
+        [
+          [second.id, "Second"],
+          [first.id, "First"],
+          [third.id, "Third"],
+        ],
+      );
+      assert.deepEqual(
+        restored.attempts
+          .filter((attempt) => attempt.runId === first.id || attempt.runId === third.id)
+          .map((attempt) => attempt.status),
+        ["pending", "pending"],
+      );
     }),
   );
 

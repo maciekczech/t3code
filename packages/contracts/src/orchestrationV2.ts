@@ -1201,6 +1201,16 @@ export const OrchestrationV2Notification = Schema.Struct({
 });
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
+/** What a squashed queued message was before the squash, so the squash can be undone. */
+export const OrchestrationV2SquashedFrom = Schema.Struct({
+  text: Schema.String,
+  attachments: Schema.Array(ChatAttachment),
+  context: Schema.optional(OrchestrationMessageContext),
+  // The cancelled runs whose messages were merged in, in merge order.
+  absorbedRunIds: Schema.Array(RunId),
+});
+export type OrchestrationV2SquashedFrom = typeof OrchestrationV2SquashedFrom.Type;
+
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
@@ -1215,6 +1225,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   text: Schema.String,
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(ChatAttachment),
+  squashedFrom: Schema.optional(OrchestrationV2SquashedFrom),
   streaming: Schema.Boolean,
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
@@ -3068,6 +3079,13 @@ export const OrchestrationV2Command = Schema.Union([
     text: Schema.optional(Schema.String),
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     context: Schema.optional(OrchestrationMessageContext),
+  }),
+  /** Undoes a squash: the run gets its own message back and the absorbed runs rejoin the queue after it. */
+  Schema.Struct({
+    type: Schema.Literal("queued-run.unsquash"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),

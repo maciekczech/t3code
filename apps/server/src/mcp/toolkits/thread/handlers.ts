@@ -267,6 +267,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       text: input.text,
     })),
   ),
+  t3_queue_unsquash: writesThread((input) =>
+    dispatch(input.threadId, (common) => ({
+      ...common,
+      type: "queued-run.unsquash",
+      runId: input.queuedRunId,
+    })),
+  ),
   t3_queue_cancel: writesThread((input) =>
     dispatch(input.threadId, (common) => ({
       ...common,

@@ -136,6 +136,12 @@ const QueueSquashTool = Tool.make("t3_queue_squash", {
     text: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
   }),
 }).annotate(Tool.Destructive, true);
+const QueueUnsquashTool = Tool.make("t3_queue_unsquash", {
+  ...commandTool,
+  description:
+    "Undo a squash: the queued message gets its original text back and the messages it absorbed rejoin the queue after it. Edits made since the squash are dropped.",
+  parameters: Schema.Struct(queueTarget),
+}).annotate(Tool.Destructive, true);
 
 const requestTarget = { threadId: Schema.optional(ThreadId), requestId: RuntimeRequestId };
 const question = Schema.Struct({
@@ -300,4 +306,5 @@ export const ThreadToolkit = Toolkit.make(
   QueueReorderTool,
   QueuePromoteTool,
   QueueSquashTool,
+  QueueUnsquashTool,
 );
