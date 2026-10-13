@@ -11000,6 +11000,7 @@ export default function ChatView(props: ChatViewProps) {
           })}
           environmentId={activeThread.environmentId}
           threadId={activeThread.id}
+          supportsSquash={serverConfig?.environment.capabilities.queuedRunSquash === true}
           optimisticMessages={optimisticUserMessages}
           editingRunId={editingQueuedRun?.runId ?? null}
           squashingRunIds={editingQueuedRun?.squashRunIds ?? null}

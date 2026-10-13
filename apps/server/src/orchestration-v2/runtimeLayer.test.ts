@@ -4365,6 +4365,17 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         .pipe(Effect.flip);
       assert.equal(singleRunError._tag, "OrchestratorCommandRejectedError");
 
+      const tooLongError = yield* orchestrator
+        .dispatch({
+          type: "queued-runs.squash",
+          commandId: CommandId.make("runtime-layer-queued-squash-too-long"),
+          threadId,
+          runIds: [first.id, second.id],
+          text: "x".repeat(120_001),
+        })
+        .pipe(Effect.flip);
+      assert.equal(tooLongError._tag, "OrchestratorCommandRejectedError");
+
       // The listed order decides the merged text, not the queue order.
       yield* orchestrator.dispatch({
         type: "queued-runs.squash",
