@@ -36,6 +36,7 @@ function queueEntry(
     queuedRunId: run.id,
     text: characters.slice(0, limit).join(""),
     truncated: characters.length > limit,
+    isSquashed: message.squashedFrom !== undefined,
   };
 }
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (

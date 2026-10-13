@@ -76,6 +76,8 @@ const queueEntry = Schema.Struct({
   queuedRunId: RunId,
   text: Schema.String,
   truncated: Schema.Boolean,
+  // t3_queue_unsquash applies to this message.
+  isSquashed: Schema.Boolean,
 });
 const QueueListTool = Tool.make("t3_queue_list", {
   ...commandTool,

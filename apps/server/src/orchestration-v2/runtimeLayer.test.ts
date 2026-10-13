@@ -4485,6 +4485,30 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           .map((attempt) => attempt.status),
         ["pending", "pending"],
       );
+      assert.deepEqual(
+        restored.nodes
+          .filter((node) => node.runId === first.id || node.runId === third.id)
+          .map((node) => [node.status, node.completedAt]),
+        [
+          ["pending", null],
+          ["pending", null],
+        ],
+      );
+      // A retried unsquash is answered from its receipt and changes nothing.
+      yield* orchestrator.dispatch({
+        type: "queued-run.unsquash",
+        commandId: CommandId.make("runtime-layer-queued-unsquash-all"),
+        threadId,
+        runId: second.id,
+      });
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
+          run.id,
+          run.status,
+          run.queuePosition,
+        ]),
+        restored.runs.map((run) => [run.id, run.status, run.queuePosition]),
+      );
 
       // Absorbing a message that is itself a squash still unsquashes into every original.
       yield* orchestrator.dispatch({

@@ -1280,7 +1280,14 @@ describe("orchestrator MCP toolkit", () => {
             });
             const queueSecondPage = yield* invoke("t3_queue_list", { cursor: 1, limit: 1 });
             expect(queueSecondPage.structuredContent).toEqual({
-              items: [{ queuedRunId: queuedUserRun.id, text: "🙂".repeat(1000), truncated: true }],
+              items: [
+                {
+                  queuedRunId: queuedUserRun.id,
+                  text: "🙂".repeat(1000),
+                  truncated: true,
+                  isSquashed: false,
+                },
+              ],
               nextCursor: null,
             });
             const queueRead = yield* invoke("t3_queue_read", { queuedRunId: queuedUserRun.id });
@@ -1288,6 +1295,7 @@ describe("orchestrator MCP toolkit", () => {
               queuedRunId: queuedUserRun.id,
               text: "🙂".repeat(16000),
               truncated: true,
+              isSquashed: false,
             });
             const missingQueueRead = yield* invoke("t3_queue_read", { queuedRunId: parentRun.id });
             expect(declaredFailure(missingQueueRead)).toMatchObject({ code: "invalid_request" });
