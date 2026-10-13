@@ -10987,6 +10987,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const onComposerResume = useCallback(() => onResumeRef.current(), []);
   const onComposerCompactContext = useCallback(() => onCompactContextRef.current(), []);
+  const supportsQueuedRunSquash = serverConfig?.environment.capabilities.queuedRunSquash === true;
   const queuedRunsControl = useMemo(
     () =>
       isServerThread && activeThread ? (
@@ -11000,7 +11001,7 @@ export default function ChatView(props: ChatViewProps) {
           })}
           environmentId={activeThread.environmentId}
           threadId={activeThread.id}
-          supportsSquash={serverConfig?.environment.capabilities.queuedRunSquash === true}
+          supportsSquash={supportsQueuedRunSquash}
           optimisticMessages={optimisticUserMessages}
           editingRunId={editingQueuedRun?.runId ?? null}
           squashingRunIds={editingQueuedRun?.squashRunIds ?? null}
@@ -11017,6 +11018,7 @@ export default function ChatView(props: ChatViewProps) {
       isServerThread,
       keybindings,
       optimisticUserMessages,
+      supportsQueuedRunSquash,
     ],
   );
   // Resend once the cancelled dispatch has settled and the composer is free.
